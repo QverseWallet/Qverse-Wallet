@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Settings Qverse</title>
+<link rel="stylesheet" href="options.css"/></head>
+<body>
+  <div class="wrap">
+    <h2>Qverse Wallet — Settings</h2>
+    <div class="card">
+      <h3>Broadcast</h3>
+      <div class="field">
+        <label for="qtcBroadcastUrl">Endpoint</label>
+        <input id="qtcBroadcastUrl" value="https://explorer-api.superquantum.io/tx"/>
+      </div>
+    </div>
+    <div class="card">
+      <h3>(Esplora)</h3>
+      <div class="field">
+        <label for="qtcBalanceUrl">API URL ({address})</label>
+        <input id="qtcBalanceUrl" value="https://explorer-api.superquantum.io/address/{address}"/>
+      </div>
+    </div>
+    <div class="row">
+      <button id="save">Save</button>
+      <button id="reset">Reset</button>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body></html>

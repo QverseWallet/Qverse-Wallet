@@ -1,0 +1,5 @@
+const $=s=>document.querySelector(s);
+function load(){ chrome.storage.local.get({ qtcBroadcastUrl:'https://explorer-api.superquantum.io/tx', qtcBalanceUrl:'https://explorer-api.superquantum.io/address/{address}' }, cfg=>{ $('#qtcBroadcastUrl').value=cfg.qtcBroadcastUrl; $('#qtcBalanceUrl').value=cfg.qtcBalanceUrl; }); }
+function save(){ const qtcBroadcastUrl=$('#qtcBroadcastUrl').value.trim(); const qtcBalanceUrl=$('#qtcBalanceUrl').value.trim(); chrome.storage.local.set({ qtcBroadcastUrl, qtcBalanceUrl }, ()=> alert('Guardado.')); }
+function reset(){ $('#qtcBroadcastUrl').value='https://explorer-api.superquantum.io/tx'; $('#qtcBalanceUrl').value='https://explorer-api.superquantum.io/address/{address}'; }
+document.addEventListener('DOMContentLoaded',()=>{ load(); $('#save').addEventListener('click',save); $('#reset').addEventListener('click',reset); });
