@@ -9,7 +9,6 @@
     };
   }
 
-
   // Global state + expose
   const state = { unlocked:false, cryptoKey:null, keys:[] };
   window.state = state;
@@ -18,85 +17,83 @@
   function notify(msg,type="info"){ if(type!=="error") return; const n=$('#notif'); if(!n) return; n.textContent=String(msg); n.className='notify error'; n.style.display='block'; setTimeout(()=> n.style.display='none', 4000); }
   window.notify = notify;
 
-// === QTC: 10‑min session envelope 
-const QTC_SESS = 'qtcSession';
-const QTC_SESS_ENV = 'qtcSessionEnv';
-const QTC_SESS_TTL = 10*60*1000; // 10 min
+  // === QTC: 10‑min session envelope 
+  const QTC_SESS = 'qtcSession';
+  const QTC_SESS_ENV = 'qtcSessionEnv';
+  const QTC_SESS_TTL = 10*60*1000; // 10 min
 
-// Robust Base64 helpers (sin spread)
-function b64FromBytes(u8){
-  let s='', CHUNK=0x8000;
-  for(let i=0;i<u8.length;i+=CHUNK){
-    s += String.fromCharCode.apply(null, u8.subarray(i, i+CHUNK));
-  }
-  return btoa(s);
-}
-function bytesFromB64(b64){
-  const s = atob(b64);
-  const out = new Uint8Array(s.length);
-  for(let i=0;i<s.length;i++) out[i] = s.charCodeAt(i);
-  return out;
-}
-
-// Promisified storage.session (compatible MV3)
-const sessGet    = (keys)=>new Promise((res,rej)=>{ try{ chrome.storage.session.get(keys, v=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(v); }); }catch(e){ rej(e);} });
-const sessSet    = (obj)=> new Promise((res,rej)=>{ try{ chrome.storage.session.set(obj, ()=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(); }); }catch(e){ rej(e);} });
-const sessRemove = (keys)=>new Promise((res,rej)=>{ try{ chrome.storage.session.remove(keys, ()=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(); }); }catch(e){ rej(e);} });
-
-async function makeSessionKey(){ return crypto.getRandomValues(new Uint8Array(32)); }
-async function importSessKey(raw){ return crypto.subtle.importKey('raw', raw, {name:'AES-GCM'}, false, ['encrypt','decrypt']); }
-
-async function setSessionEnvelope(){
-  try{
-    if(!state.keys || !state.keys.length) return;
-    const rawKey = await makeSessionKey();
-    const key = await importSessKey(rawKey);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const plain = new TextEncoder().encode(JSON.stringify({keys: state.keys}));
-    const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, plain));
-    const expiresAt = Date.now() + QTC_SESS_TTL;
-    await sessSet({ [QTC_SESS]: { key: b64FromBytes(rawKey), expiresAt },
-                    [QTC_SESS_ENV]: { iv: b64FromBytes(iv), ct: b64FromBytes(ct) } });
-  }catch(e){ /* noop */ }
-}
-
-async function tryRestoreEnvelope(){
-  try{
-    const got = await sessGet([QTC_SESS, QTC_SESS_ENV]);
-    const sess = got[QTC_SESS]; const env = got[QTC_SESS_ENV];
-    if(!sess || !env) return false;
-    if(Date.now() > (sess.expiresAt||0)){ await sessRemove([QTC_SESS,QTC_SESS_ENV]); return false; }
-    const raw = bytesFromB64(sess.key);
-    const iv  = bytesFromB64(env.iv);
-    const ct  = bytesFromB64(env.ct);
-    const key = await importSessKey(raw);
-    const plain = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct));
-    const obj = JSON.parse(new TextDecoder().decode(plain));
-    if(obj && Array.isArray(obj.keys)){
-      state.keys = obj.keys;
-      state.unlocked = true;
-      return true;
+  // Robust Base64 helpers (sin spread)
+  function b64FromBytes(u8){
+    let s='', CHUNK=0x8000;
+    for(let i=0;i<u8.length;i+=CHUNK){
+      s += String.fromCharCode.apply(null, u8.subarray(i, i+CHUNK));
     }
-    return false;
-  }catch(e){ return false; }
-}
+    return btoa(s);
+  }
+  function bytesFromB64(b64){
+    const s = atob(b64);
+    const out = new Uint8Array(s.length);
+    for(let i=0;i<s.length;i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
 
-async function touchEnvelope(){
-  try{
-    const got = await sessGet([QTC_SESS]);
-    const sess = got[QTC_SESS]; if(!sess) return;
-    sess.expiresAt = Date.now() + QTC_SESS_TTL;
-    await sessSet({ [QTC_SESS]: sess });
-  }catch(e){}
-}
-async function clearEnvelope(){ try{ await sessRemove([QTC_SESS,QTC_SESS_ENV]); }catch(e){} }
+  // Promisified storage.session (compatible MV3)
+  const sessGet    = (keys)=>new Promise((res,rej)=>{ try{ chrome.storage.session.get(keys, v=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(v); }); }catch(e){ rej(e);} });
+  const sessSet    = (obj)=> new Promise((res,rej)=>{ try{ chrome.storage.session.set(obj, ()=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(); }); }catch(e){ rej(e);} });
+  const sessRemove = (keys)=>new Promise((res,rej)=>{ try{ chrome.storage.session.remove(keys, ()=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(); }); }catch(e){ rej(e);} });
 
-function startSessKeepAlive(){
-  ['click','keydown','mousemove'].forEach(ev => document.addEventListener(ev, ()=>touchEnvelope(), {passive:true}));
-  setInterval(()=>touchEnvelope(), 20000);
-}
+  async function makeSessionKey(){ return crypto.getRandomValues(new Uint8Array(32)); }
+  async function importSessKey(raw){ return crypto.subtle.importKey('raw', raw, {name:'AES-GCM'}, false, ['encrypt','decrypt']); }
 
+  async function setSessionEnvelope(){
+    try{
+      if(!state.keys || !state.keys.length) return;
+      const rawKey = await makeSessionKey();
+      const key = await importSessKey(rawKey);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const plain = new TextEncoder().encode(JSON.stringify({keys: state.keys}));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, plain));
+      const expiresAt = Date.now() + QTC_SESS_TTL;
+      await sessSet({ [QTC_SESS]: { key: b64FromBytes(rawKey), expiresAt },
+                      [QTC_SESS_ENV]: { iv: b64FromBytes(iv), ct: b64FromBytes(ct) } });
+    }catch(e){ /* noop */ }
+  }
 
+  async function tryRestoreEnvelope(){
+    try{
+      const got = await sessGet([QTC_SESS, QTC_SESS_ENV]);
+      const sess = got[QTC_SESS]; const env = got[QTC_SESS_ENV];
+      if(!sess || !env) return false;
+      if(Date.now() > (sess.expiresAt||0)){ await sessRemove([QTC_SESS,QTC_SESS_ENV]); return false; }
+      const raw = bytesFromB64(sess.key);
+      const iv  = bytesFromB64(env.iv);
+      const ct  = bytesFromB64(env.ct);
+      const key = await importSessKey(raw);
+      const plain = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct));
+      const obj = JSON.parse(new TextDecoder().decode(plain));
+      if(obj && Array.isArray(obj.keys)){
+        state.keys = obj.keys;
+        state.unlocked = true;
+        return true;
+      }
+      return false;
+    }catch(e){ return false; }
+  }
+
+  async function touchEnvelope(){
+    try{
+      const got = await sessGet([QTC_SESS]);
+      const sess = got[QTC_SESS]; if(!sess) return;
+      sess.expiresAt = Date.now() + QTC_SESS_TTL;
+      await sessSet({ [QTC_SESS]: sess });
+    }catch(e){}
+  }
+  async function clearEnvelope(){ try{ await sessRemove([QTC_SESS,QTC_SESS_ENV]); }catch(e){} }
+
+  function startSessKeepAlive(){
+    ['click','keydown','mousemove'].forEach(ev => document.addEventListener(ev, ()=>touchEnvelope(), {passive:true}));
+    setInterval(()=>touchEnvelope(), 20000);
+  }
 
   // UI helpers
   function setVisible(sel, on){ const el=$(sel); if(el) el.classList.toggle("hidden", !on); }
@@ -123,7 +120,6 @@ function startSessKeepAlive(){
     state.cryptoKey=key; return key;
   }
 
-  
   async function saveKeysEncrypted(){
     if(!state.cryptoKey) return;
     const enc=new TextEncoder(); const iv=crypto.getRandomValues(new Uint8Array(12));
@@ -143,7 +139,6 @@ function startSessKeepAlive(){
   }
   window.saveKeysEncrypted=saveKeysEncrypted; window.loadKeysEncrypted=loadKeysEncrypted;
 
-  
   function ensureRandom(){
     if (window.Crypto && Crypto.util && typeof Crypto.util.randomBytes !== "function") {
       Crypto.util.randomBytes = function(n){ const b=new Uint8Array(n); crypto.getRandomValues(b); return Array.from(b); };
@@ -158,35 +153,25 @@ function startSessKeepAlive(){
 
   function pushKey(addr, wif){ state.keys.push({addr,wif}); renderKeys(); saveKeysEncrypted().catch(()=>notify("Could not save keys","error")); fetchBalances().catch(()=>{}); }
   function renderKeys(){
-    
-const _al = document.querySelector("#addrList"); if(_al) _al.innerHTML = state.keys.map((k,i)=>`
-  <div class="account-row flex items-center justify-between" data-idx="${i}">
-    <div class="truncate">
-      <div class="flex items-center gap-2">
-        <span class="copyIcon copyAddr" title="Copiar" data-addr="${k.addr}" aria-label="Copiar">📋</span>
-        <div class="font-mono truncate">${k.addr}</div>
+    const _al = document.querySelector("#addrList"); if(_al) _al.innerHTML = state.keys.map((k,i)=>`
+      <div class="account-row flex items-center justify-between" data-idx="${i}">
+        <div class="truncate">
+          <div class="flex items-center gap-2">
+            <span class="copyIcon copyAddr" title="Copiar" data-addr="${k.addr}" aria-label="Copiar">📋</span>
+            <div class="font-mono truncate">${k.addr}</div>
+          </div>
+          <div class="text-xs opacity-70">idx ${i}</div>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="addrBalance font-mono text-sm" data-addr="${k.addr}">${formatQtc(k.balance || 0)}</div>
+          <button class="btn btn-xs" data-action="export-wif" data-idx="${i}">WIF</button>
+        </div>
       </div>
-      
-      <div class="text-xs opacity-70">idx ${i}</div>
-    </div>
-    <div class="flex items-center gap-3">
-      <div class="addrBalance font-mono text-sm" data-addr="${k.addr}">${formatQtc(k.balance || 0)}</div>
-      <!-- copy button removed; moved to left as emoji -->
-<!--
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="9" y="9" width="10" height="12" rx="2"></rect>
-          <path d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"></path>
-        </svg>
-      -->
-      <button class="btn btn-xs" data-action="export-wif" data-idx="${i}">WIF</button>
-    </div>
-  </div>
-`).join("");
-const last=state.keys[state.keys.length-1];
-try {
-  const elAct = document.querySelector("#activityList");
-  if (elAct && typeof renderActivity === "function") { renderActivity(); }
-} catch(e) { /* noop */ }
+    `).join("");
+    try {
+      const elAct = document.querySelector("#activityList");
+      if (elAct && typeof renderActivity === "function") { renderActivity(); }
+    } catch(e) { /* noop */ }
   }
 
   async function exportWIF(){
@@ -204,190 +189,183 @@ try {
     }catch(e){ console.error(e); notify("Error generating address: "+e.message,"error"); }
   }
 
- 
-  
-function updatePendingChips(inAmt, inCount, outAmt, outCount){
-  try{
-    const inc = document.getElementById('chipIncoming');
-    const out = document.getElementById('chipOutgoing');
-    const now = Date.now();
-    const grace = 45000; 
-    
-    if(inc){
-      if(inAmt > 0 || inCount > 0){
-        inc.textContent = `+${inAmt.toFixed(8)} (${inCount})`;
-        inc.classList.remove('hidden'); inc.setAttribute('aria-hidden','false');
-        inc.dataset.lastPositive = String(now);
-      } else {
-        const last = Number(inc && inc.dataset && inc.dataset.lastPositive || 0);
-        if (!last || (now - last) > grace){
-          inc.classList.add('hidden'); inc.setAttribute('aria-hidden','true');
-        } 
-      }
-    }
-    if(out){
-      if(outAmt > 0 || outCount > 0){
-        out.textContent = `-${outAmt.toFixed(8)} (${outCount})`;
-        out.classList.remove('hidden'); out.setAttribute('aria-hidden','false');
-        out.dataset.lastPositive = String(now);
-      } else {
-        const last = Number(out && out.dataset && out.dataset.lastPositive || 0);
-        if (!last || (now - last) > grace){
-          out.classList.add('hidden'); out.setAttribute('aria-hidden','true');
+  function updatePendingChips(inAmt, inCount, outAmt, outCount){
+    try{
+      const inc = document.getElementById('chipIncoming');
+      const out = document.getElementById('chipOutgoing');
+      const now = Date.now();
+      const grace = 45000; 
+      if(inc){
+        if(inAmt > 0 || inCount > 0){
+          inc.textContent = `+${inAmt.toFixed(8)} (${inCount})`;
+          inc.classList.remove('hidden'); inc.setAttribute('aria-hidden','false');
+          inc.dataset.lastPositive = String(now);
+        } else {
+          const last = Number(inc && inc.dataset && inc.dataset.lastPositive || 0);
+          if (!last || (now - last) > grace){
+            inc.classList.add('hidden'); inc.setAttribute('aria-hidden','true');
+          } 
         }
       }
-    }
-  }catch(e){ /* silent */ }
-}
-
-
-async function pendingIncomingViaUtxo(addrs){
-  let sum=0, cnt=0;
-  for(const a of addrs){
-    try{
-      const url = `https://explorer-api.superquantum.io/address/${encodeURIComponent(a)}/utxo`;
-      const r = await fetch(url); const arr = await r.json();
-      if(Array.isArray(arr)){
-        for(const u of arr){
-          if(u && u.status && u.status.confirmed===false){
-            sum += (u.value||0)/1e8; cnt += 1;
+      if(out){
+        if(outAmt > 0 || outCount > 0){
+          out.textContent = `-${outAmt.toFixed(8)} (${outCount})`;
+          out.classList.remove('hidden'); out.setAttribute('aria-hidden','false');
+          out.dataset.lastPositive = String(now);
+        } else {
+          const last = Number(out && out.dataset && out.dataset.lastPositive || 0);
+          if (!last || (now - last) > grace){
+            out.classList.add('hidden'); out.setAttribute('aria-hidden','true');
           }
         }
       }
-    }catch(e){ /* ignore */ }
+    }catch(e){ /* silent */ }
   }
-  return {sum, cnt};
-}
 
-
-
-
-
-
-async function pendingIncomingExternalViaUtxo(addrs){
-  const myset = new Set(addrs);
-  const utxos = [];
-  try{
+  async function pendingIncomingViaUtxo(addrs){
+    let sum=0, cnt=0;
     for(const a of addrs){
       try{
         const url = `https://explorer-api.superquantum.io/address/${encodeURIComponent(a)}/utxo`;
         const r = await fetch(url); const arr = await r.json();
         if(Array.isArray(arr)){
           for(const u of arr){
-            if(u && u.status && u.status.confirmed===false && u.value>0){
-              utxos.push({ txid: u.txid, vout: u.vout, value: u.value, addr: u.scriptpubkey_address || a });
+            if(u && u.status && u.status.confirmed===false){
+              sum += (u.value||0)/1e8; cnt += 1;
             }
           }
         }
-      }catch(e){}
+      }catch(e){ /* ignore */ }
     }
-  }catch(e){}
-
-  const txcache = new Map();
-  let extSum=0, extCnt=0; let chSum=0, chCnt=0;
-  for(const u of utxos){
-    try{
-      let tx = txcache.get(u.txid);
-      if(!tx){
-        const r = await fetch(`https://explorer-api.superquantum.io/tx/${encodeURIComponent(u.txid)}`);
-        tx = await r.json();
-        txcache.set(u.txid, tx);
-      }
-      let spendsOurs = false;
-      if(tx && Array.isArray(tx.vin)){
-        for(const vin of tx.vin){
-          const pv = vin && vin.prevout;
-          const addr = pv && pv.scriptpubkey_address;
-          if(addr && myset.has(addr)){ spendsOurs = true; break; }
-        }
-      }
-      if(spendsOurs){ chSum += (u.value||0)/1e8; chCnt += 1; }
-      else { extSum += (u.value||0)/1e8; extCnt += 1; }
-    }catch(e){}
+    return {sum, cnt};
   }
-  return { sum: extSum, cnt: extCnt, changeSum: chSum, changeCnt: chCnt };
-}
 
-async function pendingOutgoingViaMempool(addrs){
-  const myset = new Set(addrs);
-  const seen = new Set();
-  let sum=0, cnt=0, changeSum=0, changeCnt=0;
-  for(const a of addrs){
+  async function pendingIncomingExternalViaUtxo(addrs){
+    const myset = new Set(addrs);
+    const utxos = [];
     try{
-      const url = `https://explorer-api.superquantum.io/address/${encodeURIComponent(a)}/txs/mempool`;
-      const r = await fetch(url); const txs = await r.json();
-      if(Array.isArray(txs)){
-        for(const tx of txs){
-          const txid = tx && (tx.txid || tx.hash);
-          if(!txid || seen.has(txid)) continue;
-
-          let spendsOurs=false;
-          if(Array.isArray(tx.vin)){
-            for(const vin of tx.vin){
-              const pv = vin && vin.prevout;
-              const addr = pv && pv.scriptpubkey_address;
-              if(addr && myset.has(addr)){ spendsOurs=true; break; }
-            }
-          }
-          if(!spendsOurs) continue;
-
-          let externalOut=0, changeOut=0, changePieces=0;
-          if(Array.isArray(tx.vout)){
-            for(const v of tx.vout){
-              const addr = v && v.scriptpubkey_address;
-              const val  = v && v.value;
-              if(typeof val === 'number'){
-                if(addr && myset.has(addr)){ changeOut += val; changePieces += 1; }
-                else { externalOut += val; }
+      for(const a of addrs){
+        try{
+          const url = `https://explorer-api.superquantum.io/address/${encodeURIComponent(a)}/utxo`;
+          const r = await fetch(url); const arr = await r.json();
+          if(Array.isArray(arr)){
+            for(const u of arr){
+              if(u && u.status && u.status.confirmed===false && u.value>0){
+                utxos.push({ txid: u.txid, vout: u.vout, value: u.value, addr: u.scriptpubkey_address || a });
               }
             }
           }
-          if(externalOut>0){ seen.add(txid); cnt += 1; sum += externalOut/1e8; }
-          if(changeOut>0){ changeSum += changeOut/1e8; changeCnt += changePieces; }
-        }
+        }catch(e){}
       }
-    }catch(e){ /* ignore */ }
+    }catch(e){}
+
+    const txcache = new Map();
+    let extSum=0, extCnt=0; let chSum=0, chCnt=0;
+    for(const u of utxos){
+      try{
+        let tx = txcache.get(u.txid);
+        if(!tx){
+          const r = await fetch(`https://explorer-api.superquantum.io/tx/${encodeURIComponent(u.txid)}`);
+          tx = await r.json();
+          txcache.set(u.txid, tx);
+        }
+        let spendsOurs = false;
+        if(tx && Array.isArray(tx.vin)){
+          for(const vin of tx.vin){
+            const pv = vin && vin.prevout;
+            const addr = pv && pv.scriptpubkey_address;
+            if(addr && myset.has(addr)){ spendsOurs = true; break; }
+          }
+        }
+        if(spendsOurs){ chSum += (u.value||0)/1e8; chCnt += 1; }
+        else { extSum += (u.value||0)/1e8; extCnt += 1; }
+      }catch(e){}
+    }
+    return { sum: extSum, cnt: extCnt, changeSum: chSum, changeCnt: chCnt };
   }
-  return {sum, cnt, changeSum, changeCnt};
-}
 
+  async function pendingOutgoingViaMempool(addrs){
+    const myset = new Set(addrs);
+    const seen = new Set();
+    let sum=0, cnt=0, changeSum=0, changeCnt=0;
+    for(const a of addrs){
+      try{
+        const url = `https://explorer-api.superquantum.io/address/${encodeURIComponent(a)}/txs/mempool`;
+        const r = await fetch(url); const txs = await r.json();
+        if(Array.isArray(txs)){
+          for(const tx of txs){
+            const txid = tx && (tx.txid || tx.hash);
+            if(!txid || seen.has(txid)) continue;
 
-let __autoRefreshTimer = null;
+            let spendsOurs=false;
+            if(Array.isArray(tx.vin)){
+              for(const vin of tx.vin){
+                const pv = vin && vin.prevout;
+                const addr = pv && pv.scriptpubkey_address;
+                if(addr && myset.has(addr)){ spendsOurs=true; break; }
+              }
+            }
+            if(!spendsOurs) continue;
 
-function renderMainAddressInline(){
-  try{
-    const el = document.getElementById('mainAddrText');
-    const cp = document.getElementById('mainAddrCopy');
-    if(!el || !cp) return;
-    const k = (state.keys||[])[(state.keys||[]).length-1];
-    if(!k){ el.textContent = ""; cp.setAttribute('data-addr',''); return; }
-    el.textContent = k.addr;
-    cp.setAttribute('data-addr', k.addr);
-  }catch(e){}
-}
+            let externalOut=0, changeOut=0, changePieces=0;
+            if(Array.isArray(tx.vout)){
+              for(const v of tx.vout){
+                const addr = v && v.scriptpubkey_address;
+                const val  = v && v.value;
+                if(typeof val === 'number'){
+                  if(addr && myset.has(addr)){ changeOut += val; changePieces += 1; }
+                  else { externalOut += val; }
+                }
+              }
+            }
+            if(externalOut>0){ seen.add(txid); cnt += 1; sum += externalOut/1e8; }
+            if(changeOut>0){ changeSum += changeOut/1e8; changeCnt += changePieces; }
+          }
+        }
+      }catch(e){ /* ignore */ }
+    }
+    return {sum, cnt, changeSum, changeCnt};
+  }
 
-function startAutoRefresh(){
-  try{ if(__autoRefreshTimer) clearInterval(__autoRefreshTimer); }catch(e){}
-  __autoRefreshTimer = setInterval(()=>{
-    try{ if(state && state.unlocked){ fetchBalances(); } }catch(e){}
-  }, 20000);
-}
-async function fetchBalances(){
+  let __autoRefreshTimer = null;
+
+  function renderMainAddressInline(){
     try{
-      const addrs = state.keys.map(k=>k.addr); if(!addrs.length){ const t=$("#totalBalance"); if(t) t.textContent="0"; renderMainAddressInline();
-      $("#totals").style.display="block"; return; 
-  try{ updatePendingChips(incSum, incCnt, outSum, outCnt); }catch(e){}
-}
-      
+      const el = document.getElementById('mainAddrText');
+      const cp = document.getElementById('mainAddrCopy');
+      if(!el || !cp) return;
+      const k = (state.keys||[])[(state.keys||[]).length-1];
+      if(!k){ el.textContent = ""; cp.setAttribute('data-addr',''); return; }
+      el.textContent = k.addr;
+      cp.setAttribute('data-addr', k.addr);
+    }catch(e){}
+  }
+
+  function startAutoRefresh(){
+    try{ if(__autoRefreshTimer) clearInterval(__autoRefreshTimer); }catch(e){}
+    __autoRefreshTimer = setInterval(()=>{
+      try{ if(state && state.unlocked){ fetchBalances(); } }catch(e){}
+    }, 20000);
+  }
+
+  async function fetchBalances(){
+    try{
+      const addrs = state.keys.map(k=>k.addr);
+      if(!addrs.length){
+        const t=$("#totalBalance"); if(t) t.textContent="0";
+        renderMainAddressInline();
+        const totals = $("#totals"); if (totals) totals.style.display="block";
+        try{ updatePendingChips(0,0,0,0); }catch(e){}
+        return;
+      }
+
       let total = 0; let incSum=0, outSum=0, incCnt=0, outCnt=0;
       for(const a of addrs){
         const url = `https://explorer-api.superquantum.io/address/${encodeURIComponent(a)}`;
         const res = await fetch(url); const j = await res.json();
         let sats = 0;
         if (j && j.chain_stats){ sats += (j.chain_stats.funded_txo_sum||0) - (j.chain_stats.spent_txo_sum||0); }
-        
         const coin = sats/1e8;
-       
         if(j && j.mempool_stats){
           incSum += (j.mempool_stats.funded_txo_sum||0)/1e8;  incCnt += (j.mempool_stats.funded_txo_count||0);
           outSum += (j.mempool_stats.spent_txo_sum||0)/1e8;   outCnt += (j.mempool_stats.spent_txo_count||0);
@@ -397,61 +375,57 @@ async function fetchBalances(){
         if (cell) cell.innerHTML = `<b>${coin.toFixed(8)}</b>`;
       }
       window.__qtcTotal = total;
-      if (Math.abs(total) < 1e-12) { $("#totalBalance").textContent = '0'; } else { $("#totalBalance").textContent = total.toFixed(8); }
+      const tb = $("#totalBalance");
+      if (tb) tb.textContent = (Math.abs(total) < 1e-12) ? '0' : total.toFixed(8);
       try{ window.__qtcTotal = total; __recalcTopFiatFromDom(); }catch(_){ } /*__recalc_call_after_total*/
-      /* unconfirmedLine auto-row removed */;
-
       renderMainAddressInline();
-      $("#totals").style.display="block";
+      const totals = $("#totals"); if (totals) totals.style.display="block";
+      try{ updatePendingChips(incSum, incCnt, outSum, outCnt); }catch(e){}
     }catch(e){ console.warn(e); notify("Could not fetch balance","error"); }
-  
- 
-  try {
-    const addrs = state.keys.map(k => k.addr);
-    const __inc = await pendingIncomingExternalViaUtxo(addrs);
-    const __out = await pendingOutgoingViaMempool(addrs);
-    const __incSum  = (__inc.sum  || 0);
-    const __incCnt  = (__inc.cnt  || 0);
-    const __outSum  = (__out.sum || 0);
-    const __outCnt  = (__out.cnt || 0);
-    updatePendingChips(__incSum, __incCnt, __outSum, __outCnt);
-    try{
-      const net = (__incSum - __outSum);
-      const el = document.getElementById("unconfirmedLine");
-      if(el){
-        const sign = net>0 ? "+" : "";
-        el.textContent = `Unconfirmed: ${sign}${net.toFixed(8)}`;
-        el.style.color = net>0 ? "#118a00" : (net<0 ? "#b64000" : "inherit");
-      }
-    }catch(e){}
-  } catch (e) {}
 
-}
+    // Unconfirmed net line
+    try {
+      const addrs = state.keys.map(k => k.addr);
+      const __inc = await pendingIncomingExternalViaUtxo(addrs);
+      const __out = await pendingOutgoingViaMempool(addrs);
+      const __incSum  = (__inc.sum  || 0);
+      const __incCnt  = (__inc.cnt  || 0);
+      const __outSum  = (__out.sum || 0);
+      const __outCnt  = (__out.cnt || 0);
+      updatePendingChips(__incSum, __incCnt, __outSum, __outCnt);
+      try{
+        const net = (__incSum - __outSum);
+        const el = document.getElementById("unconfirmedLine");
+        if(el){
+          const sign = net>0 ? "+" : "";
+          el.textContent = `Unconfirmed: ${sign}${net.toFixed(8)}`;
+          el.style.color = net>0 ? "#118a00" : (net<0 ? "#b64000" : "inherit");
+        }
+      }catch(e){}
+    } catch (e) {}
+  }
   window.fetchBalances = fetchBalances;
 
-
-window.__recalcTopFiatFromDom = window.__recalcTopFiatFromDom || (function(){
-  function num(t){ try{ return parseFloat(String(t||'').replace(/[^0-9.\-]/g,'')) || 0; }catch(_){ return 0; } }
-  function recalc(){
-    try{
-      var balTxt = (document.querySelector('#totalBalance')||{}).textContent || '0';
-      var bal = num(balTxt);
-      var price = num((document.querySelector('#qtcPrice')||{}).textContent);
-      var usd = bal * price;
-      var usdEl = document.querySelector('#totalFiat');
-      if(usdEl){
-        if (bal === 0 || Math.abs(usd) < 1e-12){
-          usdEl.textContent = '$0';
-        }else{
-          usdEl.textContent = '$' + usd.toFixed(2);
+  window.__recalcTopFiatFromDom = window.__recalcTopFiatFromDom || (function(){
+    function num(t){ try{ return parseFloat(String(t||'').replace(/[^0-9.\-]/g,'')) || 0; }catch(_){ return 0; } }
+    function recalc(){
+      try{
+        var balTxt = (document.querySelector('#totalBalance')||{}).textContent || '0';
+        var bal = num(balTxt);
+        var price = num((document.querySelector('#qtcPrice')||{}).textContent);
+        var usd = bal * price;
+        var usdEl = document.querySelector('#totalFiat');
+        if(usdEl){
+          if (bal === 0 || Math.abs(usd) < 1e-12){
+            usdEl.textContent = '$0';
+          }else{
+            usdEl.textContent = '$' + usd.toFixed(2);
+          }
         }
-      }
-    }catch(e){}
-  }
-  return recalc;
-})();
-
-
+      }catch(e){}
+    }
+    return recalc;
+  })();
 
   async function unlock(){
     const pwd=$("#password").value; if(!pwd) return notify("Enter your password","error");
@@ -467,255 +441,239 @@ window.__recalcTopFiatFromDom = window.__recalcTopFiatFromDom || (function(){
     }catch(e){ notify("Could not unlock: "+e.message,"error"); }
   }
   async function createVault(){
-  const pwd=$("#password").value; if(!pwd) return notify("Create a password","error");
-  const seed=crypto.getRandomValues(new Uint8Array(32));
-  await saveVault(seed, pwd);
+    const pwd=$("#password").value; if(!pwd) return notify("Create a password","error");
+    const seed=crypto.getRandomValues(new Uint8Array(32));
+    await saveVault(seed, pwd);
 
+    detectCoinjs();
+    let first=null; try{ first = generateAddress(); }catch(e){ console.error(e); }
+    state.keys = state.keys || [];
+    await saveKeysEncrypted();
 
-  detectCoinjs();
-  let first=null; try{ first = generateAddress(); }catch(e){ console.error(e); }
-  state.keys = state.keys || [];
-  await saveKeysEncrypted();
+    const modal = document.getElementById("recoveryModal");
+    const wifEl  = document.getElementById("recoveryWif");
+    const addrEl = document.getElementById("recoveryAddr");
+    if(modal && wifEl && addrEl){
+      const last = state.keys[state.keys.length-1] || first || {};
+      if(last.wif)  wifEl.value  = last.wif;
+      if(last.addr) addrEl.value = last.addr;
+      modal.classList.remove("hidden");
+      modal.style.display = "flex";
+      modal.setAttribute("aria-hidden","false");
 
-  
-  const modal = document.getElementById("recoveryModal");
-  const wifEl  = document.getElementById("recoveryWif");
-  const addrEl = document.getElementById("recoveryAddr");
-  if(modal && wifEl && addrEl){
-    const last = state.keys[state.keys.length-1] || first || {};
-    if(last.wif)  wifEl.value  = last.wif;
-    if(last.addr) addrEl.value = last.addr;
-    modal.classList.remove("hidden");
-    modal.style.display = "flex";
-    modal.setAttribute("aria-hidden","false");
+      const copyBtn = document.getElementById("copyWifBtn");
+      if(copyBtn && !copyBtn.dataset.bound){
+        copyBtn.dataset.bound = "1";
+        copyBtn.addEventListener("click", async ()=>{
+          try{ await navigator.clipboard.writeText(wifEl.value||""); notify("WIF copiado","success"); }
+          catch(e){ notify("No se pudo copiar","error"); }
+        });
+      }
 
-    const copyBtn = document.getElementById("copyWifBtn");
-    if(copyBtn && !copyBtn.dataset.bound){
-      copyBtn.dataset.bound = "1";
-      copyBtn.addEventListener("click", async ()=>{
-        try{ await navigator.clipboard.writeText(wifEl.value||""); notify("WIF copiado","success"); }
-        catch(e){ notify("No se pudo copiar","error"); }
+      const confirmBtn = document.getElementById("confirmRecoveryBtn");
+      if(confirmBtn && !confirmBtn.dataset.bound){
+        confirmBtn.dataset.bound = "1";
+        confirmBtn.addEventListener("click", async ()=>{
+          try {
+            const wifNow  = (wifEl && wifEl.value || '').trim();
+            const addrNow = (addrEl && addrEl.value || '').trim();
+            if (wifNow && addrNow) {
+              if (!Array.isArray(state.keys)) state.keys = [];
+              const exists = state.keys.some(k => k && k.addr === addrNow);
+              if (!exists) {
+                state.keys.push({ addr: addrNow, wif: wifNow });
+                try { await saveKeysEncrypted(); } catch(e) {}
+              }
+            }
+          } catch(e) {}
+
+          modal.classList.add("hidden");
+          modal.style.display = "none";
+          modal.setAttribute("aria-hidden","true");
+          
+          state.unlocked = true;
+          setVisible("#authSection", false);
+          setVisible("#walletSection", true);
+          try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
+          try{ await loadKeysEncrypted(); populateFromSelect(); await fetchBalances(); }catch(e){}
+          notify("Billetera creada","success");
+          const cb=document.querySelector("#createBtn"); if(cb) cb.style.display="none";
+          try{
+            if (window.QTC_gate) { window.QTC_gate(); }
+            else {
+              const a = document.getElementById('authSection');
+              const w = document.getElementById('walletSection');
+              if (w){ w.style.display=''; w.classList.remove('hidden'); }
+              if (a){ a.style.display='none'; a.classList.add('hidden'); }
+            }
+          }catch(_){}
+        });
+      }
+      return; 
+    }
+
+    state.unlocked=true;
+    setVisible("#authSection", false);
+    setVisible("#walletSection", true);
+    try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
+    notify("Billetera creada","success");
+  }
+
+  async function hasVault(){
+    try{
+      const r = await chrome.runtime.sendMessage({ type: "QTC_LOAD_ENCRYPTED" });
+      const p = r && r.payload;
+      return !!(p && typeof p.salt==='string' && typeof p.iv==='string' && typeof p.ciphertext==='string' && p.salt.length>0 && p.iv.length>0 && p.ciphertext.length>0);
+    }catch(e){ return false; }
+  }
+
+  function setAuthMode(mode){
+    const title = document.getElementById('authTitle');
+    const pwdLabel = document.getElementById('passwordLabel');
+    const pwdHint = document.getElementById('passwordHint');
+    const unlockBtn = document.getElementById('unlockBtn');
+    const createBtn = document.getElementById('createBtn');
+    if(mode==='create'){
+      if(title) { title.textContent = 'Create wallet'; title.style.textAlign = 'center'; }
+      if(pwdLabel) pwdLabel.textContent = 'Password for your new wallet';
+      if(pwdHint) pwdHint.textContent = 'We’ll use this password to encrypt your local vault. It’s not recoverable if you forget it.';
+      if(unlockBtn) unlockBtn.style.display = 'none';
+      if(createBtn){ createBtn.style.display=''; createBtn.textContent='Create wallet'; }
+      const cta=document.getElementById('importWifCta'); if(cta) cta.style.display='';
+    }else{
+      if(title) title.textContent = 'Unlock';
+      if(pwdLabel) pwdLabel.textContent = 'Password';
+      if(pwdHint) pwdHint.textContent = '';
+      if(unlockBtn) unlockBtn.style.display = '';
+      const cta=document.getElementById('importWifCta'); if(cta) cta.style.display='none';
+      if(createBtn){ createBtn.textContent='Create vault'; }
+    }
+  }
+
+  async function startImportWifFlow(){
+    const modal = document.getElementById('importWifModal');
+    const input = document.getElementById('importWifInput');
+    const cancelBtn = document.getElementById('cancelImportWifBtn');
+    const confirmBtn = document.getElementById('confirmImportWifBtn');
+    if(!modal || !input || !cancelBtn || !confirmBtn){ return notify('No se pudo abrir el importador', 'error'); }
+
+    modal.classList.remove('hidden'); modal.style.display='flex'; modal.setAttribute('aria-hidden','false');
+    input.value='';
+
+    const closeModal = ()=>{ modal.classList.add('hidden'); modal.style.display='none'; modal.setAttribute('aria-hidden','true'); };
+    if(!cancelBtn.dataset.bound){ cancelBtn.dataset.bound='1'; cancelBtn.addEventListener('click', closeModal); }
+
+    if(!confirmBtn.dataset.bound){
+      confirmBtn.dataset.bound='1';
+      confirmBtn.addEventListener('click', async ()=>{
+        try{
+          const wif = (input.value||'').trim();
+          if(!wif) return notify('Pega tu WIF', 'error');
+          // Initialize vault if needed using the password field
+          if(!state.cryptoKey){
+            const pwdInput = document.getElementById('password');
+            const pwd = (pwdInput && pwdInput.value) ? pwdInput.value : '';
+            if(!pwd){
+              return notify('Set a password above first to encrypt your vault, then import your WIF.', 'error');
+            }
+            try{
+              const seed = crypto.getRandomValues(new Uint8Array(32));
+              await saveVault(seed, pwd);
+            }catch(err){
+              console.error(err);
+              return notify('Could not create vault', 'error');
+            }
+          }
+          detectCoinjs();
+          let addr='';
+          try{
+            if(typeof coinjs.wif2address === 'function'){ addr = (coinjs.wif2address(wif)||{}).address || ""; }
+          }catch(e){}
+          if(!addr){ return notify('Invalid WIF', 'error'); }
+          pushKey(addr, wif);
+          try{ await saveKeysEncrypted(); }catch(_){}
+          notify('WIF importado', 'success');
+          closeModal();
+          
+          state.unlocked = true;
+          setVisible('#authSection', false);
+          setVisible('#walletSection', true);
+          try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
+          try{ await loadKeysEncrypted(); populateFromSelect(); await fetchBalances(); }catch(e){}
+          try{ const cb=document.querySelector('#createBtn'); if(cb && await hasVault()) cb.style.display='none'; }catch(_){}
+        }catch(e){ console.error(e); notify('Could not import', 'error'); }
+      });
+    }
+  }
+
+  async function enterWalletAfterAuth(){
+    try{
+      if (typeof saveKeysEncrypted === 'function') {
+        try { await saveKeysEncrypted(); } catch(e) { console.warn('saveKeysEncrypted:', e); }
+      }
+      await new Promise(r => setTimeout(r, 60));
+      if (typeof loadKeysEncrypted === 'function') {
+        try { await loadKeysEncrypted(); } catch(e) { console.warn('loadKeysEncrypted:', e); }
+      }
+      if (typeof populateFromSelect === 'function') {
+        try { populateFromSelect(); } catch(e) { console.warn('populateFromSelect:', e); }
+      }
+      if (typeof fetchBalances === 'function') {
+        try { await fetchBalances(); } catch(e) { console.warn('fetchBalances:', e); }
+      }
+    }catch(e){ console.warn('enterWalletAfterAuth:', e); }
+  }
+
+  function bindUI(){
+    const esb = document.getElementById('easySendBtn');
+    if (esb && !esb.dataset.bound){
+      esb.dataset.bound='1';
+      esb.addEventListener('click', async ()=>{
+        try { await easySend(); } catch(e){ try{ notify(e.message||'Error al enviar','error'); }catch(_){} }
       });
     }
 
-    const confirmBtn = document.getElementById("confirmRecoveryBtn");
-    if(confirmBtn && !confirmBtn.dataset.bound){
-      confirmBtn.dataset.bound = "1";
-      confirmBtn.addEventListener("click", async ()=>{
-      
-        try {
-          const wifNow  = (wifEl && wifEl.value || '').trim();
-          const addrNow = (addrEl && addrEl.value || '').trim();
-          if (wifNow && addrNow) {
-            if (!Array.isArray(state.keys)) state.keys = [];
-            const exists = state.keys.some(k => k && k.addr === addrNow);
-            if (!exists) {
-              state.keys.push({ addr: addrNow, wif: wifNow });
-              try { await saveKeysEncrypted(); } catch(e) {}
-            }
-          }
-        } catch(e) {}
-
-        modal.classList.add("hidden");
-        modal.style.display = "none";
-        modal.setAttribute("aria-hidden","true");
-        
-        state.unlocked = true;
-        setVisible("#authSection", false);
-        setVisible("#walletSection", true);
-        try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-try{ await loadKeysEncrypted(); populateFromSelect(); await fetchBalances(); }catch(e){}
-        notify("Billetera creada","success");
-        const cb=document.querySelector("#createBtn"); if(cb) cb.style.display="none";
-      
-        
-        try{
-          if (window.QTC_gate) { window.QTC_gate(); }
-          else {
-            const a = document.getElementById('authSection');
-            const w = document.getElementById('walletSection');
-            if (w){ w.style.display=''; w.classList.remove('hidden'); }
-            if (a){ a.style.display='none'; a.classList.add('hidden'); }
-          }
-        }catch(_){}
-});
+    const importLink = document.getElementById('importWifLink');
+    if(importLink && !importLink.dataset.bound){
+      importLink.dataset.bound='1';
+      importLink.addEventListener('click', (e)=>{ e.preventDefault(); startImportWifFlow(); });
     }
-    return; 
-  }
 
+    const ub = document.getElementById('unlockBtn');
+    const cb = document.getElementById('createBtn');
+    if (ub && !ub.dataset.bound){ ub.dataset.bound="1"; ub.addEventListener('click', ()=>{ try{ unlock(); }catch(e){ console.warn(e); } }); }
+    if (cb && !cb.dataset.bound){ cb.dataset.bound="1"; cb.addEventListener('click', ()=>{ try{ createVault(); }catch(e){ console.warn(e); } }); }
 
-  state.unlocked=true;
-  setVisible("#authSection", false);
-  setVisible("#walletSection", true);
-  try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-notify("Billetera creada","success");
-}
-
-async function hasVault(){
-  try{
-    const r = await chrome.runtime.sendMessage({ type: "QTC_LOAD_ENCRYPTED" });
-    const p = r && r.payload;
-    return !!(p && typeof p.salt==='string' && typeof p.iv==='string' && typeof p.ciphertext==='string' && p.salt.length>0 && p.iv.length>0 && p.ciphertext.length>0);
-  }catch(e){ return false; }
-}
-
-function setAuthMode(mode){
-  const title = document.getElementById('authTitle');
-  const pwdLabel = document.getElementById('passwordLabel');
-  const pwdHint = document.getElementById('passwordHint');
-  const unlockBtn = document.getElementById('unlockBtn');
-  const createBtn = document.getElementById('createBtn');
-  if(mode==='create'){
-    if(title) { title.textContent = 'Create wallet'; title.style.textAlign = 'center'; }
-    if(pwdLabel) pwdLabel.textContent = 'Password for your new wallet';
-    if(pwdHint) pwdHint.textContent = 'We’ll use this password to encrypt your local vault. It’s not recoverable if you forget it.';
-    if(unlockBtn) unlockBtn.style.display = 'none';
-    if(createBtn){ createBtn.style.display=''; createBtn.textContent='Create wallet'; }
-    const cta=document.getElementById('importWifCta'); if(cta) cta.style.display='';
-  }else{
-    if(title) title.textContent = 'Unlock';
-    if(pwdLabel) pwdLabel.textContent = 'Password';
-    if(pwdHint) pwdHint.textContent = '';
-    if(unlockBtn) unlockBtn.style.display = '';
-    const cta=document.getElementById('importWifCta'); if(cta) cta.style.display='none';
-    if(createBtn){ createBtn.textContent='Create vault'; }
-  }
-}
-
-
-async function startImportWifFlow(){
-  
-  const modal = document.getElementById('importWifModal');
-  const input = document.getElementById('importWifInput');
-  const cancelBtn = document.getElementById('cancelImportWifBtn');
-  const confirmBtn = document.getElementById('confirmImportWifBtn');
-  if(!modal || !input || !cancelBtn || !confirmBtn){ return notify('No se pudo abrir el importador', 'error'); }
-
-  
-  try{
-    const pwd = document.getElementById('password')?.value || '';
-    if(!pwd){ return notify('Enter a password to encrypt your vault', 'error'); }
-    
-    let exists=false;
-    try{ const resp = await chrome.runtime.sendMessage({type:'QTC_LOAD_ENCRYPTED'}); const p=resp&&resp.payload; exists=!!(p&&p.ciphertext); }catch(e){}
-    if(!exists){
-      const seed=crypto.getRandomValues(new Uint8Array(32));
-      await saveVault(seed, pwd);
-    }
-  }catch(e){ console.warn(e); }
-
-  modal.classList.remove('hidden'); modal.style.display='flex'; modal.setAttribute('aria-hidden','false');
-  input.value='';
-
-  const closeModal = ()=>{ modal.classList.add('hidden'); modal.style.display='none'; modal.setAttribute('aria-hidden','true'); };
-  if(!cancelBtn.dataset.bound){ cancelBtn.dataset.bound='1'; cancelBtn.addEventListener('click', closeModal); }
-
-  if(!confirmBtn.dataset.bound){
-    confirmBtn.dataset.bound='1';
-    confirmBtn.addEventListener('click', async ()=>{
-      try{
-        const wif = (input.value||'').trim();
-        if(!wif) return notify('Pega tu WIF', 'error');
-        detectCoinjs();
-        let addr='';
-        try{
-          if(typeof coinjs.wif2address === 'function'){ addr = (coinjs.wif2address(wif)||{}).address || ""; }
-        }catch(e){}
-        if(!addr){ return notify('Invalid WIF', 'error'); }
-        pushKey(addr, wif);
-        await saveKeysEncrypted();
-        notify('WIF importado', 'success');
-        closeModal();
-        
-        state.unlocked = true;
-        setVisible('#authSection', false);
-        setVisible('#walletSection', true);
-        try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-try{ await loadKeysEncrypted(); populateFromSelect(); await fetchBalances(); }catch(e){}
-        const cb=document.querySelector('#createBtn'); if(cb) cb.style.display='none';
-      }catch(e){ console.error(e); notify('Could not import', 'error'); }
-    });
-  }
-}
-
-
-async function enterWalletAfterAuth(){
-  try{
-    
-    if (typeof saveKeysEncrypted === 'function') {
-      try { await saveKeysEncrypted(); } catch(e) { console.warn('saveKeysEncrypted:', e); }
-    }
-    
-    await new Promise(r => setTimeout(r, 60));
-    if (typeof loadKeysEncrypted === 'function') {
-      try { await loadKeysEncrypted(); } catch(e) { console.warn('loadKeysEncrypted:', e); }
-    }
-    if (typeof populateFromSelect === 'function') {
-      try { populateFromSelect(); } catch(e) { console.warn('populateFromSelect:', e); }
-    }
-    if (typeof fetchBalances === 'function') {
-      try { await fetchBalances(); } catch(e) { console.warn('fetchBalances:', e); }
-    }
-  }catch(e){ console.warn('enterWalletAfterAuth:', e); }
-}
-function bindUI(){
-  
-  
- 
-  const esb = document.getElementById('easySendBtn');
-  if (esb && !esb.dataset.bound){
-    esb.dataset.bound='1';
-    esb.addEventListener('click', async ()=>{
-      try { await easySend(); } catch(e){ try{ notify(e.message||'Error al enviar','error'); }catch(_){} }
+    document.querySelectorAll('.tab').forEach(btn=>{
+      if(btn.dataset.bound) return; btn.dataset.bound="1";
+      btn.addEventListener('click', ()=>{
+        const t = btn.dataset.tab; document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b===btn));
+        document.querySelectorAll('.tabpane').forEach(p=>p.style.display = (p.dataset.pane===t ? 'block' : 'none'));
+      });
     });
   }
 
-  const importLink = document.getElementById('importWifLink');
-  if(importLink && !importLink.dataset.bound){
-    importLink.dataset.bound='1';
-    importLink.addEventListener('click', (e)=>{ e.preventDefault(); startImportWifFlow(); });
-  }
-
-  const ub = document.getElementById('unlockBtn');
-  const cb = document.getElementById('createBtn');
-  if (ub && !ub.dataset.bound){ ub.dataset.bound="1"; ub.addEventListener('click', ()=>{ try{ unlock(); }catch(e){ console.warn(e); } }); }
-  if (cb && !cb.dataset.bound){ cb.dataset.bound="1"; cb.addEventListener('click', ()=>{ try{ createVault(); }catch(e){ console.warn(e); } }); }
-
-
-  document.querySelectorAll('.tab').forEach(btn=>{
-    if(btn.dataset.bound) return; btn.dataset.bound="1";
-    btn.addEventListener('click', ()=>{
-      const t = btn.dataset.tab; document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b===btn));
-      document.querySelectorAll('.tabpane').forEach(p=>p.style.display = (p.dataset.pane===t ? 'block' : 'none'));
-    });
-  });
-}
-document.addEventListener("DOMContentLoaded", ()=>{ 
+  document.addEventListener("DOMContentLoaded", ()=>{ 
     try{ startAutoRefresh(); }catch(e){}
-  
-  try{ setAuthMode("create"); }catch(e){}
-  bindUI(); populateFromSelect(); try{ setAuthMode("create"); }catch(e){}
+    try{ setAuthMode("create"); }catch(e){}
+    bindUI(); populateFromSelect(); try{ setAuthMode("create"); }catch(e){}
 
-  (async ()=>{
-    try{
-      const resp = await chrome.runtime.sendMessage({ type:"QTC_LOAD_ENCRYPTED" });
-      const exists = !!(resp && resp.payload);
-      const cb = document.querySelector('#createBtn'); const ub = document.querySelector('#unlockBtn');
-      if(exists){ try{ setAuthMode('unlock'); }catch(e){} if(cb) cb.style.display='none'; if(ub) ub.style.display=''; }
-      else { try{ setAuthMode('create'); }catch(e){} if(cb) cb.style.display=''; if(ub) ub.style.display='none'; } try{ setAuthMode(exists ? 'unlock' : 'create'); }catch(e){}
-    }catch(e){  }
-  })();
-});
+    (async ()=>{
+      try{
+        const resp = await chrome.runtime.sendMessage({ type:"QTC_LOAD_ENCRYPTED" });
+        const exists = !!(resp && resp.payload);
+        const cb = document.querySelector('#createBtn'); const ub = document.querySelector('#unlockBtn');
+        if(exists){ try{ setAuthMode('unlock'); }catch(e){} if(cb) cb.style.display='none'; if(ub) ub.style.display=''; }
+        else { try{ setAuthMode('create'); }catch(e){} if(cb) cb.style.display=''; if(ub) ub.style.display='none'; } try{ setAuthMode(exists ? 'unlock' : 'create'); }catch(e){}
+      }catch(e){  }
+    })();
+  });
 })();
 
 function populateFromSelect(){
   const sel = document.querySelector('#easyFrom'); if(!sel) return;
   sel.innerHTML = (state.keys||[]).map((k,i)=>`<option value="${i}">${k.addr} (idx ${i})</option>`).join("");
 }
-
 
 async function fetchScriptPubKey(txid, vout){
   const url = `https://explorer-api.superquantum.io/tx/${txid}`;
@@ -735,10 +693,8 @@ async function fetchUTXOsEsplora(address){
 
 function reverseHex(h){ return (h||'').match(/.{1,2}/g).reverse().join(''); }
 function estimateVSize(numIn, numOut){
-  
   return Math.ceil(148*numIn + 34*numOut + 10);
 }
-
 
 async function buildAndSignTx(fromIdx, toAddress, amountQtc, feeSatPerByte){
   if (!coinjs || !coinjs.transaction) throw new Error("coinjs no disponible");
@@ -747,18 +703,13 @@ async function buildAndSignTx(fromIdx, toAddress, amountQtc, feeSatPerByte){
   return await new Promise((resolve, reject)=>{
     try{
       const tx = coinjs.transaction();
-
-      
-  
-  tx.version = 2;
-
+      tx.version = 2;
       tx.addUnspent(from.addr, function(data){
         try{
           if(!data || typeof data.value === "undefined"){
             return reject(new Error("UTXOs no disponibles"));
           }
 
-          
           const nIn = (data.unspent && data.unspent.length) ? data.unspent.length : 1;
           const nOut = 1 + 1; 
           const vsize = Math.ceil(148*nIn + 34*nOut + 10);
@@ -769,37 +720,28 @@ async function buildAndSignTx(fromIdx, toAddress, amountQtc, feeSatPerByte){
           const changeQTC = totalQTC - amountQtc - feeQTC;
           if (changeQTC < 0) return reject(new Error("Insufficient funds"));
 
-         
           tx.addoutput(toAddress, Number(amountQtc).toFixed(8));
           if (changeQTC > 0) tx.addoutput(from.addr, Number(changeQTC).toFixed(8));
 
-          
           const tx2 = coinjs.transaction();
-const txu = tx2.deserialize(tx.serialize());
+          const txu = tx2.deserialize(tx.serialize());
+          txu.version = 2;
 
-txu.version = 2;
+          for (let i = 0; i < txu.ins.length; i++) {
+            const tmp = coinjs.transaction();
+            const tmpu = tmp.deserialize(txu.serialize());
+            for (let j = 0; j < tmpu.ins.length; j++) { tmpu.ins[j].script = coinjs.script(); }
+            tmpu.ins[i].script = coinjs.script().spendToScript(from.addr);
+            const sighex = tmpu.transactionSig(i, from.wif, 1);
+            const pub = coinjs.wif2pubkey(from.wif).pubkey;
+            const sc = coinjs.script();
+            sc.writeBytes(Crypto.util.hexToBytes(sighex));
+            sc.writeBytes(Crypto.util.hexToBytes(pub));
+            txu.ins[i].script = sc;
+          }
+          const hex = txu.serialize();
+          if (!hex || typeof hex !== 'string') return reject(new Error("Firma fallida"));
 
-
-for (let i = 0; i < txu.ins.length; i++) {
-  
-  const tmp = coinjs.transaction();
-  const tmpu = tmp.deserialize(txu.serialize());
-  for (let j = 0; j < tmpu.ins.length; j++) { tmpu.ins[j].script = coinjs.script(); }
-  
-  tmpu.ins[i].script = coinjs.script().spendToScript(from.addr);
-  
-  const sighex = tmpu.transactionSig(i, from.wif, 1);
- 
-  const pub = coinjs.wif2pubkey(from.wif).pubkey;
-  const sc = coinjs.script();
-  sc.writeBytes(Crypto.util.hexToBytes(sighex));
-  sc.writeBytes(Crypto.util.hexToBytes(pub));
-  txu.ins[i].script = sc;
-}
-const hex = txu.serialize();
-if (!hex || typeof hex !== 'string') return reject(new Error("Firma fallida"));
-
-          
           try {
             window.__qtcSendDebug = {
               flow: "official-addUnspent",
@@ -823,7 +765,6 @@ if (!hex || typeof hex !== 'string') return reject(new Error("Firma fallida"));
   });
 }
 
-
 async function easySend(){
   try{
     const __sel = document.querySelector('#easyFrom');
@@ -835,23 +776,25 @@ async function easySend(){
     if(!amt || amt<=0) throw new Error("Invalid amount");
     if(!fee || fee<=0) throw new Error("Invalid fee");
     const hex = await buildAndSignTx(idx, to, amt, fee);
-    if (!(typeof hex==='string' && hex.length>=200 && /^[0-9a-fA-F]+$/.test(hex))) {  document.querySelector('#easySendOut').textContent = 'Invalid TX (hex corto o no-hex)';  notify('Invalid TX','error');
-    try{ await fetchBalances(); setTimeout(()=>{ try{ fetchBalances(); }catch(e){} }, 1500); }catch(e){}
-    return;}try{ var txArea=document.querySelector('#rawtx'); if(txArea){ txArea.value = hex; } }catch(e){}try {
+    if (!(typeof hex==='string' && hex.length>=200 && /^[0-9a-fA-F]+$/.test(hex))) {  
+      document.querySelector('#easySendOut').textContent = 'Invalid TX ';  notify('Invalid TX','error');
+      try{ await fetchBalances(); setTimeout(()=>{ try{ fetchBalances(); }catch(e){} }, 1500); }catch(e){}
+      return;
+    }
+    try{ var txArea=document.querySelector('#rawtx'); if(txArea){ txArea.value = hex; } }catch(e){}
+    try {
       const dbg = window.__qtcSendDebug || {};
       document.querySelector('#easySendOut').textContent = 'Preparing transaction…';
     } catch(e){}
     // broadcast via SW
     const res=await chrome.runtime.sendMessage({ type:"QTC_BROADCAST", rawtx:hex });
-    document.querySelector('#easySendOut').textContent = (res && res.ok) ? 'Transaction sent correctamente.' : ('Send error: ' + ((res&& (res.error||res.status)) || 'unknown'));
+    document.querySelector('#easySendOut').textContent = (res && res.ok) ? 'Transaction sent' : ('Send error: ' + ((res&& (res.error||res.status)) || 'unknown'));
     notify(res.ok ? "Transaction sent" : ("Broadcast error: "+(res.error||res.status)), res.ok ? "success":"error");
   }catch(e){
     document.querySelector('#easySendOut').textContent = String(e);
     notify(String(e), "error"); 
   }
 }
-
-
 
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-action="export-wif"]');
@@ -863,7 +806,6 @@ document.addEventListener('click', (e) => {
 function exportWIFByIdx(idx){
   const k = (state.keys || [])[idx];
   if (!k || !k.wif){ notify("Key for that address was not found","error"); return; }
- 
   (navigator.clipboard && navigator.clipboard.writeText ?
     navigator.clipboard.writeText(k.wif).then(()=>notify("WIF copiado al portapapeles","success")) :
     Promise.reject()
@@ -880,8 +822,6 @@ function exportWIFByIdx(idx){
     notify("WIF exportado como archivo .txt","success");
   });
 }
-
-
 
 (function(){
   const list = document.getElementById('addrList');
@@ -903,7 +843,6 @@ function exportWIFByIdx(idx){
     }
   });
 })();
-
 
 async function renderActivity(){
   try{
@@ -977,7 +916,6 @@ async function renderActivity(){
 
       cont.innerHTML = rows.length ? `<div class="list">${rows.join('')}</div>` : '<div class="muted">No activity yet.</div>';
 
-      
       cont.querySelectorAll('.tx-row').forEach(row=>{
         row.addEventListener('click', ()=>{
           const open = row.getAttribute('aria-expanded') === 'true';
@@ -997,8 +935,6 @@ async function renderActivity(){
   }
 }
 
-
-
 document.addEventListener('click', (ev)=>{
   const row = ev.target.closest?.('.tx-row');
   if(!row) return;
@@ -1015,33 +951,27 @@ document.addEventListener('keydown', (ev)=>{
   row.setAttribute('aria-expanded', open ? 'true' : 'false');
 });
 
-
 document.addEventListener('click', (ev)=>{
   const tab = ev.target.closest?.('.tab[data-tab="receive"]');
   if(tab) setTimeout(renderActivity, 0);
 }, {passive:true});
 
-
 ['visibilitychange','focus'].forEach(ev => document.addEventListener(ev, renderActivity, {passive:true}));
 
-
-
-
-
-
-  function updateTotalsFiat(price, ch24){
-    try{
-      const total = (typeof window.__qtcTotal === 'number') ? window.__qtcTotal : parseFloat((document.getElementById('totalBalance')||{}).textContent||"0") || 0;
-      const elFiat = document.getElementById('totalFiat');
-      const elCh   = document.getElementById('totalFiatChange');
-      if (elFiat) elFiat.textContent = fmtUSD(total * (price||0));
-      if (elCh){
-        const sign = ch24>0 ? 'pos' : (ch24<0 ? 'neg' : 'neutral');
-        elCh.className = `change ${sign}`;
-        elCh.textContent = (ch24>0?'+':'') + (isFinite(ch24)?ch24.toFixed(2):'0.00') + '%';
-      }
-    }catch(e){}
-  }
+function updateTotalsFiat(price, ch24){
+  try{
+    const total = (typeof window.__qtcTotal === 'number') ? window.__qtcTotal : parseFloat((document.getElementById('totalBalance')||{}).textContent||"0") || 0;
+    const elFiat = document.getElementById('totalFiat');
+    const elCh   = document.getElementById('totalFiatChange');
+    const fmtUSD = (v)=>{ const n = Number(v||0); return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`; };
+    if (elFiat) elFiat.textContent = fmtUSD(total * (price||0));
+    if (elCh){
+      const sign = ch24>0 ? 'pos' : (ch24<0 ? 'neg' : 'neutral');
+      elCh.className = `change ${sign}`;
+      elCh.textContent = (ch24>0?'+':'') + (isFinite(ch24)?ch24.toFixed(2):'0.00') + '%';
+    }
+  }catch(e){}
+}
 
 (function(){
   const API_DETAIL = 'https://api.coingecko.com/api/v3/coins/qubitcoin-2?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=true';
@@ -1055,33 +985,33 @@ document.addEventListener('click', (ev)=>{
   }
 
   function drawSpark(values){
-  try{
-    const c = document.getElementById('qtcSpark');
-    if(!c) return;
-    const ctx = c.getContext('2d');
-    const w=c.width, h=c.height;
-    ctx.clearRect(0,0,w,h);
-    if(!values || !values.length) return;
-    const ys = values.map(p=>p[1]);
-    const min = Math.min(...ys), max=Math.max(...ys);
-    const pad = 6;
-    const mapX = (i)=> pad + (w-2*pad) * (i/(ys.length-1));
-    const mapY = (y)=> h-pad - (h-2*pad) * ((y-min)/(max-min||1));
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ys.forEach((y,i)=>{
-      const x=mapX(i), yy=mapY(y);
-      if(i===0) ctx.moveTo(x,yy); else ctx.lineTo(x,yy);
-    });
-    ctx.strokeStyle = (ys[ys.length-1] >= ys[0]) ? 'rgba(76,195,138,1)' : 'rgba(247,107,107,1)';
-    ctx.stroke();
-    window.__qtcSparkInfo = {
-      values: values,
-      min: min, max: max, n: ys.length,
-      pad: pad, w: c.width, h: c.height
-    };
-  }catch(e){ /* noop */ }
-}
+    try{
+      const c = document.getElementById('qtcSpark');
+      if(!c) return;
+      const ctx = c.getContext('2d');
+      const w=c.width, h=c.height;
+      ctx.clearRect(0,0,w,h);
+      if(!values || !values.length) return;
+      const ys = values.map(p=>p[1]);
+      const min = Math.min(...ys), max=Math.max(...ys);
+      const pad = 6;
+      const mapX = (i)=> pad + (w-2*pad) * (i/(ys.length-1));
+      const mapY = (y)=> h-pad - (h-2*pad) * ((y-min)/(max-min||1));
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ys.forEach((y,i)=>{
+        const x=mapX(i), yy=mapY(y);
+        if(i===0) ctx.moveTo(x,yy); else ctx.lineTo(x,yy);
+      });
+      ctx.strokeStyle = (ys[ys.length-1] >= ys[0]) ? 'rgba(76,195,138,1)' : 'rgba(247,107,107,1)';
+      ctx.stroke();
+      window.__qtcSparkInfo = {
+        values: values,
+        min: min, max: max, n: ys.length,
+        pad: pad, w: c.width, h: c.height
+      };
+    }catch(e){ /* noop */ }
+  }
 
   async function loadDetail(){
     const elPrice = document.getElementById('qtcPrice');
@@ -1122,14 +1052,12 @@ document.addEventListener('click', (ev)=>{
   }
 
   function initPriceWidget(){
-
- 
-  try{
-    const host = document.querySelector('.tabpane[data-pane="home"] #priceWidget');
-    document.querySelectorAll('#qtcSpark, #qtcPrice, #qtcChange, #qtcUpdated, .price-line, .spark-wrap, .range').forEach(el=>{
-      if(!host || !el.closest('.tabpane[data-pane="home"] #priceWidget')) el.remove();
-    });
-  }catch(e){}
+    try{
+      const host = document.querySelector('.tabpane[data-pane="home"] #priceWidget');
+      document.querySelectorAll('#qtcSpark, #qtcPrice, #qtcChange, #qtcUpdated, .price-line, .spark-wrap, .range').forEach(el=>{
+        if(!host || !el.closest('.tabpane[data-pane="home"] #priceWidget')) el.remove();
+      });
+    }catch(e){}
 
     const w = document.getElementById('priceWidget');
     if(!w) return;
@@ -1143,11 +1071,9 @@ document.addEventListener('click', (ev)=>{
     }, {passive:true});
    
     loadDetail(); loadChart(lastDays);
-   
     setInterval(()=>{ loadDetail(); loadChart(lastDays); }, 60000);
   }
 
-  
   document.addEventListener('click', (ev)=>{
     const tab = ev.target.closest?.('.tab[data-tab="home"]');
     if(tab) setTimeout(initPriceWidget, 0);
@@ -1156,7 +1082,6 @@ document.addEventListener('click', (ev)=>{
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', initPriceWidget);
   else initPriceWidget();
 })();
-
 
 (function(){
   function wireOptionsBtn(){
@@ -1190,9 +1115,6 @@ document.addEventListener('click', (ev)=>{
   else { wireOptionsBtn(); }
 })();
 
-
-
-
 document.addEventListener('click', async (ev)=>{
   const btn = ev.target.closest('.copyAddr'); if(!btn) return;
   if (btn.closest('#addrList')) return; 
@@ -1210,9 +1132,6 @@ document.addEventListener('click', async (ev)=>{
   }
 });
 
-
-
-
 function __recalcTopFiatFromDom(){
   try{
     const bal = document.getElementById('totalBalance');
@@ -1221,6 +1140,7 @@ function __recalcTopFiatFromDom(){
     const priceNode = document.getElementById('qtcPrice');
     const chNode = document.getElementById('qtcChange');
     const num = (t)=>{ try{ return parseFloat(String(t||'').replace(/[^0-9.\-]/g,''))||0; }catch(_){ return 0; } };
+    const fmtUSD = (v)=>{ const n = Number(v||0); return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`; };
     const total = num(bal.textContent);
     const price = (typeof window.__lastPrice==='number') ? window.__lastPrice : (priceNode ? num(priceNode.textContent) : 0);
     if(price>0){ usd.textContent = fmtUSD(total*price); }
@@ -1235,3 +1155,44 @@ function __recalcTopFiatFromDom(){
     }
   }catch(e){}
 }
+
+
+/* ===== Qverse — set social links (X & Telegram) ===== */
+(function setQverseSocialLinks(){
+  try{
+    const X_URL = "https://x.com/QverseWallet";
+    const TG_URL = "https://t.me/QverseWallet";
+
+    function setHref(selectorList, url){
+      for (const sel of selectorList){
+        const el = document.querySelector(sel);
+        if (el && el.tagName && el.tagName.toLowerCase() === 'a') {
+          el.setAttribute('href', url);
+          el.setAttribute('target', '_blank');
+          el.setAttribute('rel', 'noopener');
+          return true;
+        }
+      }
+      return false;
+    }
+
+    const xSelectors = ['#twitterBtn', '#xBtn', '[data-social="x"]', 'a.btn-x', 'a[aria-label="X"]', 'a[title="X"]'];
+    const tgSelectors = ['#telegramBtn', '[data-social="telegram"]', 'a.btn-telegram', 'a[aria-label="Telegram"]', 'a[title="Telegram"]'];
+
+    const setX = setHref(xSelectors, X_URL);
+    const setTG = setHref(tgSelectors, TG_URL);
+
+    // Fallback: scan all anchors by accessible name
+    if (!setX || !setTG){
+      document.querySelectorAll('a').forEach(a=>{
+        const name = (a.getAttribute('aria-label') || a.title || a.textContent || '').toLowerCase();
+        if (!setX && (name.includes('twitter') || name === 'x' || name.includes('x.com'))) {
+          a.href = X_URL; a.target = '_blank'; a.rel = 'noopener';
+        }
+        if (!setTG && (name.includes('telegram') || name.includes('t.me'))) {
+          a.href = TG_URL; a.target = '_blank'; a.rel = 'noopener';
+        }
+      });
+    }
+  }catch(e){ /* noop */ }
+})();
