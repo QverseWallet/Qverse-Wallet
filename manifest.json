@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Qverse Wallet",
+  "version": "0.3.1",
+  "description": "Qverse is an open-source wallet for the Qubitcoin blockchain.",
+  "action": {
+    "default_title": "Qverse wallet",
+    "default_popup": "popup/index.html"
+  },
+  "options_page": "options/index.html",
+  "icons": {
+    "16": "assets/icons/16.png",
+    "32": "assets/icons/32.png",
+    "48": "assets/icons/48.png",
+    "128": "assets/icons/128.png"
+  },
+  "permissions": [
+    "offscreen",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://explorer-api.superquantum.io/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
