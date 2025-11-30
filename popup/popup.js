@@ -813,6 +813,30 @@ try {
       });
     }
 
+    // Fee selector logic
+    const feeBtns = document.querySelectorAll('.fee-btn');
+    const feeInput = document.getElementById('easyFee');
+    
+    feeBtns.forEach(btn => {
+      if(btn.dataset.bound) return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', () => {
+        feeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        if(feeInput) feeInput.value = btn.dataset.fee;
+      });
+    });
+    
+    if(feeInput && !feeInput.dataset.bound){
+      feeInput.dataset.bound = '1';
+      feeInput.addEventListener('input', () => {
+        const val = parseInt(feeInput.value, 10);
+        feeBtns.forEach(b => {
+          b.classList.toggle('active', parseInt(b.dataset.fee, 10) === val);
+        });
+      });
+    }
+
     const importLink = document.getElementById('importWifLink');
     if(importLink && !importLink.dataset.bound){
       importLink.dataset.bound='1';
@@ -1169,10 +1193,10 @@ async function renderActivity(){
 
     cont.innerHTML = '<div class="muted">Loading activity…</div>';
 
-    const WEB = 'https://explorer.superquantum.io';
+    const WEB = 'https://explorer.qverse.pro';
     const addr = encodeURIComponent(k.addr);
 
-    // Use official Esplora API directly for history
+    // Use official API for history data
     const ESPLORA = 'https://explorer-api.superquantum.io';
     Promise.allSettled([
       fetch(`${ESPLORA}/address/${addr}/txs/mempool`),
@@ -1415,6 +1439,12 @@ function updateTotalsFiat(price, ch24){
     // Toggle dropdown
     btn.addEventListener('click', (e)=>{
       e.stopPropagation();
+      // Close wallet selector if open
+      const walletSelector = document.getElementById('walletSelector');
+      const walletMenu = document.getElementById('walletSelectorMenu');
+      if(walletSelector) walletSelector.classList.remove('open');
+      if(walletMenu) walletMenu.classList.add('hidden');
+      // Toggle settings menu
       menu.classList.toggle('show');
     });
     
@@ -1609,6 +1639,10 @@ function initWalletSelector(){
   // Toggle menu
   btn.addEventListener('click', (e)=>{
     e.stopPropagation();
+    // Close settings dropdown if open
+    const settingsMenu = document.getElementById('settingsMenu');
+    if(settingsMenu) settingsMenu.classList.remove('show');
+    // Toggle wallet selector
     selector.classList.toggle('open');
     menu.classList.toggle('hidden');
   });

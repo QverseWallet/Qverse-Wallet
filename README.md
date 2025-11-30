@@ -9,8 +9,8 @@ Minimal, retail-friendly UI, built as a Chrome Extension (Manifest V3) with a si
 
 The Chrome Web Store version is built from this exact source code. You can verify it:
 
-### Current Version: v0.3.1
-**SHA256:** `5DD8F606E91AE78F2CDE2D119945F4B6FA2D0B9FF23B99D79C267AE0A94F8F92`
+### Current Version: v0.3.2
+**SHA256:** `E21F731043E55F4FB990A15EFEDDB3762517886537603A2579ED7F1340750CAA`
 
 ### How to Verify:
 1. Clone this repository:

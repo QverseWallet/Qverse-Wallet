@@ -115,7 +115,7 @@ body{
 /* Wallet Selector */
 .wallet-selector {
   position: relative;
-  margin: 8px 0;
+  margin: 0 0 4px 0;
 }
 .wallet-selector-btn {
   display: flex;
@@ -1022,4 +1022,366 @@ body.auth-mode main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* === Mining Promo Card === */
+.mining-promo {
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  padding: 16px 16px 20px !important;
+  background: linear-gradient(165deg, rgba(20,30,50,0.95) 0%, rgba(12,18,28,0.98) 100%);
+  border: 1px solid rgba(58,160,255,.25);
+  border-radius: 16px;
+}
+
+.mining-promo .promo-glow {
+  position: absolute;
+  top: -60%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 200%;
+  height: 150px;
+  background: radial-gradient(ellipse at center, rgba(58,160,255,.15) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.mining-promo .promo-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mining-promo .promo-icon {
+  font-size: 22px;
+  filter: drop-shadow(0 0 8px rgba(255,200,50,.4));
+}
+
+.mining-promo .promo-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #fff 0%, #9cd2ff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.mining-promo .promo-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  background: linear-gradient(135deg, rgba(255,180,50,.2) 0%, rgba(255,120,50,.15) 100%);
+  border: 1px solid rgba(255,180,50,.4);
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffd666;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  animation: pulse-badge 2s ease-in-out infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,180,50,.3); }
+  50% { box-shadow: 0 0 15px 3px rgba(255,180,50,.2); }
+}
+
+.mining-promo .promo-highlight {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+
+.mining-promo .promo-fee {
+  font-size: 36px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #2dd4bf 0%, #3aa0ff 50%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.mining-promo .promo-duration {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.mining-promo .promo-text {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0 0 10px 0;
+}
+
+.mining-promo .promo-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px 0;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mining-promo .promo-features li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.mining-promo .promo-features .check {
+  color: #2dd4bf;
+  font-weight: 700;
+}
+
+.mining-promo .promo-url {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  color: var(--primary-300);
+  background: rgba(58,160,255,.1);
+  padding: 6px 14px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  display: inline-block;
+  border: 1px solid rgba(58,160,255,.2);
+}
+
+.mining-promo .promo-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 28px;
+  font-size: 14px;
+  font-weight: 700;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #3aa0ff 0%, #2f8ae0 100%);
+  color: #fff;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  transition: all .2s ease;
+  box-shadow: 0 4px 16px rgba(58,160,255,.3);
+}
+
+.mining-promo .promo-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(58,160,255,.45);
+  background: linear-gradient(135deg, #4fb3ff 0%, #3aa0ff 100%);
+}
+
+/* === Fee Selector === */
+.fee-field {
+  margin-top: 2px;
+}
+
+.fee-field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fee-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fee-presets {
+  display: flex;
+  flex: 1;
+  gap: 0;
+  background: rgba(255,255,255,.04);
+  border-radius: 8px;
+  padding: 2px;
+  border: 1px solid rgba(255,255,255,.06);
+}
+
+.fee-btn {
+  flex: 1;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s ease;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.fee-btn:hover {
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+}
+
+.fee-btn.active {
+  background: rgba(58,160,255,.2);
+  color: var(--primary-300);
+}
+
+.fee-input {
+  width: 56px;
+  padding: 7px 8px;
+  font-size: 12px;
+  text-align: center;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 8px;
+  color: var(--text);
+  transition: all .15s ease;
+  -moz-appearance: textfield;
+}
+
+.fee-input::-webkit-outer-spin-button,
+.fee-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.fee-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: rgba(58,160,255,.05);
+}
+
+/* === Announcement Card === */
+.announcement-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: linear-gradient(135deg, rgba(58,160,255,.1) 0%, rgba(45,212,191,.08) 100%);
+  border: 1px solid rgba(58,160,255,.2);
+  border-radius: 10px;
+}
+
+.announcement-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.announcement-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.announcement-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 1px;
+}
+
+.announcement-text {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.announcement-btn {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary-300);
+  background: rgba(58,160,255,.15);
+  border: 1px solid rgba(58,160,255,.3);
+  border-radius: 6px;
+  text-decoration: none;
+  transition: all .15s ease;
+}
+
+.announcement-btn:hover {
+  background: rgba(58,160,255,.25);
+  color: #fff;
+}
+
+/* === Exchange Banner === */
+.exchange-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  background: linear-gradient(135deg, rgba(45,212,191,.08) 0%, rgba(58,160,255,.06) 100%);
+  border: 1px solid rgba(45,212,191,.2);
+  border-radius: 10px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all .2s ease;
+}
+
+.exchange-banner:hover {
+  background: linear-gradient(135deg, rgba(45,212,191,.12) 0%, rgba(58,160,255,.1) 100%);
+  border-color: rgba(45,212,191,.35);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(45,212,191,.15);
+}
+
+.exchange-banner-left {
+  flex-shrink: 0;
+}
+
+.exchange-banner-logo {
+  height: 24px;
+  width: auto;
+  object-fit: contain;
+}
+
+.exchange-banner-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.exchange-banner-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.exchange-banner-bonus {
+  font-size: 11px;
+  font-weight: 600;
+  color: #2dd4bf;
+}
+
+.exchange-banner-cta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: rgba(45,212,191,.15);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2dd4bf;
+  transition: all .15s ease;
+}
+
+.exchange-banner:hover .exchange-banner-cta {
+  background: rgba(45,212,191,.25);
+  color: #fff;
+}
+
+.exchange-banner-cta .arrow {
+  transition: transform .15s ease;
+}
+
+.exchange-banner:hover .exchange-banner-cta .arrow {
+  transform: translateX(2px);
 }

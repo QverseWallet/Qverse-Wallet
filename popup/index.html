@@ -88,10 +88,7 @@
 <span class="fiat muted" id="totalFiat">$—</span>
 <span class="change neutral" id="totalFiatChange">0.00%</span>
 </div>
-<div aria-live="polite" class="pending-chips" id="pendingChips"><span class="pending-label muted">Unconfirmed:</span>
-<span aria-hidden="true" class="chip in hidden" id="chipIncoming" title="Incoming pending">+0.0000 (0)</span>
-<span aria-hidden="true" class="chip out hidden" id="chipOutgoing" title="Outgoing pending">–0.0000 (0)</span>
-</div><div class="addr-inline" id="mainAddress">
+<div class="addr-inline" id="mainAddress">
 <span aria-label="Copy" class="copyIcon copyAddr" data-addr="" id="mainAddrCopy" title="Copy">📋</span>
 <span class="font-mono truncate" id="mainAddrText"></span>
 </div>
@@ -101,10 +98,19 @@
 <nav class="tabs">
 <button class="tab active" data-tab="home">Dashboard</button>
 <button class="tab" data-tab="send">Send</button>
+<button class="tab" data-tab="mining">Mining</button>
 <button class="tab" data-tab="receive">Activity</button>
 </nav>
 <div class="tabpanes">
 <div class="tabpane" data-pane="home" style="display:block">
+<div class="announcement-card" id="announcementCard">
+<div class="announcement-icon">📢</div>
+<div class="announcement-content">
+<div class="announcement-title">Qverse ecosystem expansion</div>
+<div class="announcement-text">New pool, new explorer and new wallet design.</div>
+</div>
+<a href="https://qverse.pro" target="_blank" class="announcement-btn">View</a>
+</div>
 <div aria-live="polite" class="card price-card" id="priceWidget">
 <div class="price-head">
 <div class="asset">QTC</div>
@@ -123,6 +129,19 @@
 </div>
 </div>
 </div>
+<a href="https://www.coinex.com/register?rc=c9bde&channel=Referral" target="_blank" class="exchange-banner">
+<div class="exchange-banner-left">
+<img src="../assets/exchanges/coinex.webp" alt="CoinEx" class="exchange-banner-logo"/>
+</div>
+<div class="exchange-banner-content">
+<div class="exchange-banner-title">Trade QTC on CoinEx</div>
+<div class="exchange-banner-bonus">40% fee discount</div>
+</div>
+<div class="exchange-banner-cta">
+<span>Trade</span>
+<span class="arrow">→</span>
+</div>
+</a>
 </div>
 </div>
 
@@ -139,14 +158,41 @@
 <input id="easyAmount" min="0" placeholder="0.00000000" step="0.00000001" type="number"/>
 </div>
 </div>
-<div class="field-row inline">
-<div class="field">
-<label for="easyFee">Fee (sats/byte)</label>
-<input id="easyFee" min="1" step="1" type="number" value="5"/>
+<div class="field fee-field">
+<label>Fee (sats/byte)</label>
+<div class="fee-row">
+<div class="fee-presets">
+<button type="button" class="fee-btn" data-fee="3">Low</button>
+<button type="button" class="fee-btn active" data-fee="5">Normal</button>
+<button type="button" class="fee-btn" data-fee="10">Fast</button>
 </div>
-<div class="actions"><button class="primary" id="easySendBtn">Send</button></div>
+<input id="easyFee" min="1" step="1" type="number" value="5" class="fee-input" title="sats/byte"/>
+</div>
+</div>
+<div class="actions">
+<button class="primary" id="easySendBtn">Send</button>
 </div>
 <pre class="output" id="easySendOut" style="display:none"></pre>
+</div>
+</div>
+<div class="tabpane" data-pane="mining">
+<div class="card mining-promo">
+<div class="promo-glow"></div>
+<div class="promo-header">
+<h3>Qverse Pool</h3>
+</div>
+<div class="promo-badge">NEW POOL LAUNCH!</div>
+<div class="promo-highlight">
+<span class="promo-fee">0% FEE</span>
+<span class="promo-duration">for 3 months</span>
+</div>
+<p class="promo-text">Join the official Qverse mining pool.</p>
+<ul class="promo-features">
+<li><span class="check">✓</span> Reliable infrastructure</li>
+<li><span class="check">✓</span> Low latency server</li>
+<li><span class="check">✓</span> Real-time statistics</li>
+</ul>
+<a href="https://pool.qverse.pro" target="_blank" class="btn primary promo-btn">Start Mining</a>
 </div>
 </div>
 <div class="tabpane" data-pane="receive">
@@ -274,9 +320,7 @@
 <script src="session-fallback-render.js"></script>
 <script src="session-sendfill.js"></script>
 <script defer="" src="./fiat-autocalc.js"></script>
-  <script defer src="./fee-widget.js"></script>
   <script defer src="./activity-toggle-fix.js"></script>
   <script defer src="./spark-hover-overlay.js"></script>
-  <script defer src="./hashrate-widget.js"></script>
 </body>
 </html>
