@@ -20,7 +20,8 @@
   ],
   "host_permissions": [
     "https://explorer-api.superquantum.io/*",
-    "https://explorer.qverse.pro/*"
+    "https://explorer.qverse.pro/*",
+    "https://api.coinex.com/*"
   ],
   "background": {
     "service_worker": "background/service-worker.js",

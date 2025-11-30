@@ -101,6 +101,30 @@ body{
 .dropdown-item:hover {
   background: rgba(255,255,255,.12);
 }
+.dropdown-item.autolock-setting {
+  cursor: default;
+}
+.dropdown-item.autolock-setting:hover {
+  background: transparent;
+}
+.dropdown-item.autolock-setting select {
+  margin-left: auto;
+  background: #1a1a2e;
+  border: 1px solid rgba(255,255,255,.2);
+  border-radius: 4px;
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dropdown-item.autolock-setting select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.dropdown-item.autolock-setting select option {
+  background: #1a1a2e;
+  color: #fff;
+}
 .dropdown-icon {
   font-size: 14px;
   width: 18px;
@@ -586,7 +610,7 @@ main::-webkit-scrollbar,
 .price-card .fiat{ font-size:20px; font-weight:700; }
 .price-card .change{ font-size:11px; padding:1px 6px; }
 .price-card .rbtn{ padding:1px 6px; font-size:10px; }
-#qtcSpark{ height:44px; } /* was 64px */
+#qtcSpark{ height:44px; }
 
 /* Hide footer legal line across the extension */
 .footer{ display:none !important; }

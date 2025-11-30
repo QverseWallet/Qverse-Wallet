@@ -33,6 +33,18 @@
 <span class="dropdown-icon">🔑</span> Export Private Key
 </button>
 <div class="dropdown-divider"></div>
+<div class="dropdown-item autolock-setting">
+<span class="dropdown-icon">⏱️</span>
+<span>Auto-lock</span>
+<select id="autolockSelect">
+<option value="300000">5 min</option>
+<option value="900000" selected>15 min</option>
+<option value="1800000">30 min</option>
+<option value="3600000">1 hour</option>
+<option value="0">Never</option>
+</select>
+</div>
+<div class="dropdown-divider"></div>
 <button class="dropdown-item" id="menuLock">
 <span class="dropdown-icon">🔒</span> Lock Wallet
 </button>
@@ -316,7 +328,6 @@
 <script src="popup.js"></script>
 <script src="session-bridge.js"></script>
 <script src="session-gate.js"></script>
-<script src="session-offscreen.js"></script>
 <script src="session-fallback-render.js"></script>
 <script src="session-sendfill.js"></script>
 <script defer="" src="./fiat-autocalc.js"></script>

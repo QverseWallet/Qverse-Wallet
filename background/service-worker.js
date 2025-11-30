@@ -10,18 +10,14 @@ function __qtcWaitOffscreenReady(timeoutMs=1500){
   });
 }
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (sender && sender.id !== chrome.runtime.id) { return; }
-  try {
-    if (msg && /^QTC_SESS_/.test(msg.type)) {
-      if (!chrome.offscreen || !chrome.offscreen.hasDocument || !chrome.offscreen.hasDocument()) { return; }
-    }
-  } catch(e) {}
-  if (sender && sender.id !== chrome.runtime.id) { return; }
+  if (sender && sender.id !== chrome.runtime.id) { return false; }
   if (msg && msg.type === 'QTC_SESS_OFFSCREEN_READY'){
     __qtcOffscreenReady = true;
     const w = __qtcWaiters.slice(); __qtcWaiters.length = 0;
     w.forEach(fn => { try{ fn(); }catch{} });
+    return false;
   }
+  return false;
 });
 async function __qtcEnsureOffscreenReady(){
   try{

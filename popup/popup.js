@@ -26,20 +26,15 @@
   };
   window.isUnlocked = () => state.unlocked;
   
-  // Legacy compatibility - will be removed in future version
-  // WARNING: This exposes sensitive data. Marked for deprecation.
+  // Legacy compatibility - limited read-only access
   Object.defineProperty(window, 'state', {
     get: function() {
-      console.warn('[SECURITY] Direct access to window.state is deprecated. Use getWalletState() instead.');
       return { 
         unlocked: state.unlocked, 
         keys: state.keys,
-        // cryptoKey intentionally not exposed
       };
     },
-    set: function(v) {
-      console.warn('[SECURITY] Cannot set window.state directly.');
-    },
+    set: function() {},
     configurable: false
   });
 
@@ -1314,8 +1309,17 @@ function updateTotalsFiat(price, ch24){
 }
 
 (function(){
-  const API_DETAIL = 'https://api.coingecko.com/api/v3/coins/qubitcoin-2?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=true';
-  const API_CHART = (days)=> `https://api.coingecko.com/api/v3/coins/qubitcoin-2/market_chart?vs_currency=usd&days=${days}`;
+  // CoinEx API v2 - Public endpoints (no auth required)
+  const API_TICKER = 'https://api.coinex.com/v2/spot/ticker?market=QTCUSDT';
+  const API_KLINE = (period, limit) => `https://api.coinex.com/v2/spot/kline?market=QTCUSDT&period=${period}&limit=${limit}`;
+  
+  // Map days to CoinEx period and limit
+  function getKlineParams(days) {
+    if (days <= 1) return { period: '1hour', limit: 24 };      // 24 hours
+    if (days <= 7) return { period: '4hour', limit: 42 };      // 7 days
+    return { period: '1day', limit: 30 };                       // 30 days
+  }
+  
   let lastDays = 1;
   let lastTs = 0;
 
@@ -1332,7 +1336,8 @@ function updateTotalsFiat(price, ch24){
       const w=c.width, h=c.height;
       ctx.clearRect(0,0,w,h);
       if(!values || !values.length) return;
-      const ys = values.map(p=>p[1]);
+      // CoinEx kline returns objects with 'close' price
+      const ys = values.map(p => parseFloat(p.close || p[1] || 0));
       const min = Math.min(...ys), max=Math.max(...ys);
       const pad = 6;
       const mapX = (i)=> pad + (w-2*pad) * (i/(ys.length-1));
@@ -1346,7 +1351,7 @@ function updateTotalsFiat(price, ch24){
       ctx.strokeStyle = (ys[ys.length-1] >= ys[0]) ? 'rgba(76,195,138,1)' : 'rgba(247,107,107,1)';
       ctx.stroke();
       window.__qtcSparkInfo = {
-        values: values,
+        values: values.map((p,i) => [i, parseFloat(p.close || p[1] || 0)]),
         min: min, max: max, n: ys.length,
         pad: pad, w: c.width, h: c.height
       };
@@ -1358,19 +1363,24 @@ function updateTotalsFiat(price, ch24){
     const elChange = document.getElementById('qtcChange');
     const elUpdated = document.getElementById('qtcUpdated');
     try{
-      const r = await fetch(API_DETAIL);
+      const r = await fetch(API_TICKER);
       const j = await r.json();
-      const price = j?.market_data?.current_price?.usd;
-      const ch24 = j?.market_data?.price_change_percentage_24h;
-      if(typeof price === 'number'){
+      if(j.code !== 0 || !j.data || !j.data.length) throw new Error('No data');
+      const ticker = j.data[0];
+      const price = parseFloat(ticker.last);
+      const open = parseFloat(ticker.open);
+      // Calculate 24h change percentage
+      const ch24 = open > 0 ? ((price - open) / open) * 100 : 0;
+      
+      if(!isNaN(price)){
         elPrice.textContent = fmtUSD(price);
       }
-      if(typeof ch24 === 'number'){
-        const sign = ch24>0 ? 'pos' : (ch24<0 ? 'neg':'neutral');
+      if(!isNaN(ch24)){
+        const sign = ch24 > 0 ? 'pos' : (ch24 < 0 ? 'neg' : 'neutral');
         elChange.className = `change ${sign}`;
-        elChange.textContent = (ch24>0?'+':'') + ch24.toFixed(2) + '%';
+        elChange.textContent = (ch24 > 0 ? '+' : '') + ch24.toFixed(2) + '%';
       }
-      try{ window.__lastPrice = price; window.__lastChange = ch24; __recalcTopFiatFromDom(); }catch(_){ } /*__recalc_call_after_price*/
+      try{ window.__lastPrice = price; window.__lastChange = ch24; __recalcTopFiatFromDom(); }catch(_){ }
       elUpdated.textContent = ''; try{ elUpdated.style.display='none'; }catch(_){}
     }catch(e){
       elUpdated.textContent = ''; try{ elUpdated.style.display='none'; }catch(_){}
@@ -1379,9 +1389,12 @@ function updateTotalsFiat(price, ch24){
 
   async function loadChart(days){
     try{
-      const r = await fetch(API_CHART(days));
+      const { period, limit } = getKlineParams(days);
+      const r = await fetch(API_KLINE(period, limit));
       const j = await r.json();
-      const arr = j?.prices || [];
+      if(j.code !== 0 || !j.data) throw new Error('No data');
+      // CoinEx returns array of kline objects
+      const arr = j.data || [];
       drawSpark(arr);
       lastTs = Date.now();
     }catch(e){ /* noop */ }
@@ -1425,16 +1438,52 @@ function updateTotalsFiat(price, ch24){
 
 // Settings Dropdown Menu
 (function(){
+  const AUTOLOCK_KEY = 'qtcAutolockTTL';
+  const DEFAULT_TTL = 900000; // 15 min
+  
+  async function loadAutolockSetting(){
+    try {
+      const data = await chrome.storage.local.get({ [AUTOLOCK_KEY]: DEFAULT_TTL });
+      return data[AUTOLOCK_KEY];
+    } catch(e){ return DEFAULT_TTL; }
+  }
+  
+  async function saveAutolockSetting(ttl){
+    try {
+      await chrome.storage.local.set({ [AUTOLOCK_KEY]: ttl });
+      // Notify offscreen about new TTL
+      chrome.runtime.sendMessage({ type: 'QTC_SESS_SET_TTL', ttl: ttl }, () => {
+        if(chrome.runtime.lastError){ /* ignore */ }
+      });
+    } catch(e){}
+  }
+  
   function initSettingsDropdown(){
     const btn = document.getElementById('settingsBtn');
     const menu = document.getElementById('settingsMenu');
     const menuNewAddr = document.getElementById('menuNewAddress');
     const menuExportWIF = document.getElementById('menuExportWIF');
     const menuLock = document.getElementById('menuLock');
+    const autolockSelect = document.getElementById('autolockSelect');
     
     if(!btn || !menu) return;
     if(btn.dataset.bound === "1") return;
     btn.dataset.bound = "1";
+    
+    // Load and set autolock preference
+    if(autolockSelect){
+      loadAutolockSetting().then(ttl => {
+        autolockSelect.value = String(ttl);
+      });
+      autolockSelect.addEventListener('change', (e) => {
+        const ttl = parseInt(e.target.value, 10);
+        saveAutolockSetting(ttl);
+      });
+      // Prevent dropdown from closing when clicking select
+      autolockSelect.addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+    }
     
     // Toggle dropdown
     btn.addEventListener('click', (e)=>{
@@ -1484,7 +1533,14 @@ function updateTotalsFiat(price, ch24){
           }
           // Clear ALL session data
           try { await chrome.storage.session.clear(); } catch(e){}
-          try { await chrome.runtime.sendMessage({type:'QTC_SESS_CLEAR'}); } catch(e){}
+          try { 
+            await new Promise((resolve) => {
+              chrome.runtime.sendMessage({type:'QTC_SESS_CLEAR'}, () => {
+                if (chrome.runtime.lastError) { /* ignore */ }
+                resolve();
+              });
+            });
+          } catch(e){}
           try { if(typeof clearEnvelope === 'function') await clearEnvelope(); } catch(e){}
           // Show auth, hide wallet
           document.body.classList.add('auth-mode');

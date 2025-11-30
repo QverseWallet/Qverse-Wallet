@@ -1,8 +1,25 @@
 (function(){
-  const send  = (m)=> new Promise(res => chrome.runtime.sendMessage(m, res));
+  const AUTOLOCK_KEY = 'qtcAutolockTTL';
+  const DEFAULT_TTL = 900000; // 15 min
+  
+  const send = (m) => new Promise(res => {
+    chrome.runtime.sendMessage(m, (r) => {
+      if (chrome.runtime.lastError) { /* ignore */ }
+      res(r);
+    });
+  });
   const query = ()=> send({type:'QTC_SESS_QUERY'});
   const open  = (k)=> send({type:'QTC_SESS_OPEN', keys:k});
   const touch = ()=> send({type:'QTC_SESS_TOUCH'});
+  const setTTL = (ttl)=> send({type:'QTC_SESS_SET_TTL', ttl: ttl});
+  
+  async function loadAndApplyTTL(){
+    try {
+      const data = await chrome.storage.local.get({ [AUTOLOCK_KEY]: DEFAULT_TTL });
+      const ttl = data[AUTOLOCK_KEY];
+      await setTTL(ttl);
+    } catch(e){}
+  }
 
   function showAuth(){
     document.body.classList.add('auth-mode');
@@ -26,14 +43,16 @@
     try{ fetchBalances?.(); }catch{}
   }
   function startKeepAlive(){
-    ['click','keydown','mousemove'].forEach(ev => 
+    ['click','keydown','mousemove','scroll'].forEach(ev => 
       document.addEventListener(ev, ()=>touch(), {passive:true})
     );
-    setInterval(()=>touch(), 20000);
   }
 
   async function restoreFromSession(){
     try{
+      // Load and apply TTL setting first
+      await loadAndApplyTTL();
+      
       const r = await query();
       if (r && r.ok && Array.isArray(r.keys)){
         try{

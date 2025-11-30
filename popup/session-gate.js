@@ -1,5 +1,10 @@
 (function(){
-  const send  = (m)=> new Promise(res => chrome.runtime.sendMessage(m, res));
+  const send = (m) => new Promise(res => {
+    chrome.runtime.sendMessage(m, (r) => {
+      if (chrome.runtime.lastError) { /* ignore */ }
+      res(r);
+    });
+  });
   const query = ()=> send({type:'QTC_SESS_QUERY'});
   function showAuth(){
     document.body.classList.add('auth-mode');
