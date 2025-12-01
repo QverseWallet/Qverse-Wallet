@@ -107,13 +107,35 @@
 
   async function touchEnvelope(){
     try{
+      // Get TTL from storage
+      let ttl = 900000;
+      try {
+        const ttlData = await chrome.storage.local.get({qtcAutolockTTL: 900000});
+        ttl = ttlData.qtcAutolockTTL || 900000;
+      } catch(e){}
+      
+      // Update QTC_SESS envelope
       const got = await sessGet([QTC_SESS]);
-      const sess = got[QTC_SESS]; if(!sess) return;
-      sess.expiresAt = Date.now() + QTC_SESS_TTL;
-      await sessSet({ [QTC_SESS]: sess });
+      const sess = got[QTC_SESS]; 
+      if(sess) {
+        sess.expiresAt = (ttl === 0) ? 0 : (Date.now() + ttl);
+        await sessSet({ [QTC_SESS]: sess });
+      }
+      
+      // Update qtcTempKeysEnc expiration
+      const r = await chrome.storage.session.get({qtcTempKeysEnc: null});
+      if(r && r.qtcTempKeysEnc){
+        r.qtcTempKeysEnc.expiresAt = (ttl === 0) ? 0 : (Date.now() + ttl);
+        await chrome.storage.session.set({qtcTempKeysEnc: r.qtcTempKeysEnc});
+      }
     }catch(e){}
   }
-  async function clearEnvelope(){ try{ await sessRemove([QTC_SESS,QTC_SESS_ENV]); }catch(e){} }
+  async function clearEnvelope(){ 
+    try{ 
+      await sessRemove([QTC_SESS,QTC_SESS_ENV]); 
+      await chrome.storage.session.remove(['qtcTempKeysEnc']);
+    }catch(e){} 
+  }
   window.clearEnvelope = clearEnvelope;
 
   // Expose for recovery
@@ -121,8 +143,8 @@
   window.setSessionEnvelope = setSessionEnvelope;
 
   function startSessKeepAlive(){
+    // Only renew on actual user activity, NOT on interval
     ['click','keydown','mousemove'].forEach(ev => document.addEventListener(ev, ()=>touchEnvelope(), {passive:true}));
-    setInterval(()=>touchEnvelope(), 20000);
   }
 
   // Try to restore from robust storage.session (ENCRYPTED)
@@ -132,6 +154,14 @@
       const r = await chrome.storage.session.get({qtcTempKeysEnc: null});
       if(r && r.qtcTempKeysEnc && r.qtcTempKeysEnc.key && r.qtcTempKeysEnc.iv && r.qtcTempKeysEnc.ct){
         const enc = r.qtcTempKeysEnc;
+        
+        // Check expiration (expiresAt=0 means never expire)
+        if(enc.expiresAt && enc.expiresAt !== 0 && Date.now() > enc.expiresAt){
+          // Session expired - clear it
+          await chrome.storage.session.remove(['qtcTempKeysEnc']);
+          return false;
+        }
+        
         const sessKey = bytesFromB64(enc.key);
         const iv = bytesFromB64(enc.iv);
         const ct = bytesFromB64(enc.ct);
@@ -271,11 +301,22 @@ try {
       const plaintext = new TextEncoder().encode(JSON.stringify(state.keys));
       const ciphertext = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, cryptoKey, plaintext));
       
+      // Get TTL from storage (default 15 min)
+      let ttl = 900000;
+      try {
+        const ttlData = await chrome.storage.local.get({qtcAutolockTTL: 900000});
+        ttl = ttlData.qtcAutolockTTL || 900000;
+      } catch(e){}
+      
+      // Calculate expiresAt (0 = never)
+      const expiresAt = (ttl === 0) ? 0 : (Date.now() + ttl);
+      
       await chrome.storage.session.set({
         qtcTempKeysEnc: {
           key: b64FromBytes(sessKey),
           iv: b64FromBytes(iv),
-          ct: b64FromBytes(ciphertext)
+          ct: b64FromBytes(ciphertext),
+          expiresAt: expiresAt
         }
       });
     } catch(e){ /* silent */ }
@@ -1312,20 +1353,49 @@ function updateTotalsFiat(price, ch24){
   // CoinEx API v2 - Public endpoints (no auth required)
   const API_TICKER = 'https://api.coinex.com/v2/spot/ticker?market=QTCUSDT';
   const API_KLINE = (period, limit) => `https://api.coinex.com/v2/spot/kline?market=QTCUSDT&period=${period}&limit=${limit}`;
+  const CACHE_KEY = 'qtcPriceCache';
   
   // Map days to CoinEx period and limit
   function getKlineParams(days) {
-    if (days <= 1) return { period: '1hour', limit: 24 };      // 24 hours
-    if (days <= 7) return { period: '4hour', limit: 42 };      // 7 days
-    return { period: '1day', limit: 30 };                       // 30 days
+    if (days <= 1) return { period: '1hour', limit: 24 };
+    if (days <= 7) return { period: '4hour', limit: 42 };
+    return { period: '1day', limit: 30 };
   }
   
   let lastDays = 1;
   let lastTs = 0;
+  let cacheLoaded = false;
 
   function fmtUSD(v){ 
     const n = Number(v||0);
     return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`;
+  }
+  
+  async function loadCachedPrice(){
+    if(cacheLoaded) return;
+    cacheLoaded = true;
+    try {
+      const data = await chrome.storage.local.get({ [CACHE_KEY]: null });
+      const cache = data[CACHE_KEY];
+      if(cache){
+        const elPrice = document.getElementById('qtcPrice');
+        const elChange = document.getElementById('qtcChange');
+        if(elPrice && cache.price) elPrice.textContent = fmtUSD(cache.price);
+        if(elChange && typeof cache.change === 'number'){
+          const sign = cache.change > 0 ? 'pos' : (cache.change < 0 ? 'neg' : 'neutral');
+          elChange.className = `change ${sign}`;
+          elChange.textContent = (cache.change > 0 ? '+' : '') + cache.change.toFixed(2) + '%';
+        }
+        if(cache.chart) drawSpark(cache.chart);
+        try{ window.__lastPrice = cache.price; window.__lastChange = cache.change; }catch(_){}
+      }
+    } catch(e){}
+  }
+  
+  async function saveCache(price, change, chart){
+    try {
+      await chrome.storage.local.set({ [CACHE_KEY]: { price, change, chart } });
+    } catch(e){}
   }
 
   function drawSpark(values){
@@ -1358,6 +1428,8 @@ function updateTotalsFiat(price, ch24){
     }catch(e){ /* noop */ }
   }
 
+  let lastChartData = null;
+  
   async function loadDetail(){
     const elPrice = document.getElementById('qtcPrice');
     const elChange = document.getElementById('qtcChange');
@@ -1369,7 +1441,6 @@ function updateTotalsFiat(price, ch24){
       const ticker = j.data[0];
       const price = parseFloat(ticker.last);
       const open = parseFloat(ticker.open);
-      // Calculate 24h change percentage
       const ch24 = open > 0 ? ((price - open) / open) * 100 : 0;
       
       if(!isNaN(price)){
@@ -1382,6 +1453,8 @@ function updateTotalsFiat(price, ch24){
       }
       try{ window.__lastPrice = price; window.__lastChange = ch24; __recalcTopFiatFromDom(); }catch(_){ }
       elUpdated.textContent = ''; try{ elUpdated.style.display='none'; }catch(_){}
+      // Save to cache
+      saveCache(price, ch24, lastChartData);
     }catch(e){
       elUpdated.textContent = ''; try{ elUpdated.style.display='none'; }catch(_){}
     }
@@ -1393,8 +1466,8 @@ function updateTotalsFiat(price, ch24){
       const r = await fetch(API_KLINE(period, limit));
       const j = await r.json();
       if(j.code !== 0 || !j.data) throw new Error('No data');
-      // CoinEx returns array of kline objects
       const arr = j.data || [];
+      lastChartData = arr;
       drawSpark(arr);
       lastTs = Date.now();
     }catch(e){ /* noop */ }
@@ -1423,6 +1496,8 @@ function updateTotalsFiat(price, ch24){
       loadChart(days);
     }, {passive:true});
    
+    // Load cached data first (instant), then fetch fresh data
+    loadCachedPrice();
     loadDetail(); loadChart(lastDays);
     setInterval(()=>{ loadDetail(); loadChart(lastDays); }, 60000);
   }
