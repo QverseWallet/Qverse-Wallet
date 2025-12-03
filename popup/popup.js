@@ -233,28 +233,83 @@ try {
   }
   function setActiveTab(tab){ $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab===tab)); $$(".tabpane").forEach(p => p.style.display = (p.dataset.pane===tab ? "block":"none")); }
 
-  // WebCrypto vault - PBKDF2 with 600,000 iterations (OWASP 2024 recommendation)
-  const PBKDF2_ITERATIONS = 600000;
-  async function deriveKey(password, salt){ const enc=new TextEncoder(); const mat=await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]); return crypto.subtle.deriveKey({name:"PBKDF2",salt,iterations:PBKDF2_ITERATIONS,hash:"SHA-256"}, mat, {name:"AES-GCM",length:256}, false, ["encrypt","decrypt"]); }
+  // WebCrypto vault - Versioned encryption with migration support
+  const VAULT_VERSIONS = {
+    1: { iterations: 350000 },  // v0.3.0 and earlier
+    2: { iterations: 600000 }   // v0.3.1+ (OWASP 2024 recommendation)
+  };
+  const CURRENT_VAULT_VERSION = 2;
+
+  async function deriveKey(password, salt, iterations = VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations) {
+    const enc = new TextEncoder();
+    const mat = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+      {name: "PBKDF2", salt, iterations, hash: "SHA-256"},
+      mat,
+      {name: "AES-GCM", length: 256},
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
   window.deriveKey = deriveKey;
   function toB64(bytes){ return btoa(String.fromCharCode(...bytes)); }
   function fromB64(str){ return new Uint8Array(atob(str).split('').map(c=>c.charCodeAt(0))); }
   window.fromB64 = fromB64;
 
   async function saveVault(seedBytes, password){
-    const salt=crypto.getRandomValues(new Uint8Array(16)); const iv=crypto.getRandomValues(new Uint8Array(12));
-    const key=await deriveKey(password, salt);
-    const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM", iv}, key, seedBytes));
-    await chrome.runtime.sendMessage({ type:"QTC_STORE_ENCRYPTED", payload:{ salt:toB64(salt), iv:toB64(iv), ciphertext:toB64(ct) } });
-    state.cryptoKey=key; return key;
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const iterations = VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations;
+    const key = await deriveKey(password, salt, iterations);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name: "AES-GCM", iv}, key, seedBytes));
+    await chrome.runtime.sendMessage({
+      type: "QTC_STORE_ENCRYPTED",
+      payload: {
+        version: CURRENT_VAULT_VERSION,
+        iterations: iterations,
+        salt: toB64(salt),
+        iv: toB64(iv),
+        ciphertext: toB64(ct)
+      }
+    });
+    state.cryptoKey = key;
+    return key;
   }
+
   async function loadVault(password){
-    const resp=await chrome.runtime.sendMessage({ type:"QTC_LOAD_ENCRYPTED" });
+    const resp = await chrome.runtime.sendMessage({ type: "QTC_LOAD_ENCRYPTED" });
     if(!resp?.payload) throw new Error("Vault not found");
-    const {salt,iv,ciphertext}=resp.payload;
-    const key=await deriveKey(password, fromB64(salt));
-    await crypto.subtle.decrypt({name:"AES-GCM", iv:fromB64(iv)}, key, fromB64(ciphertext)); // solo para validar
-    state.cryptoKey=key; return key;
+    
+    const { salt, iv, ciphertext, version, iterations } = resp.payload;
+    
+    // Determine iterations: use metadata if exists, otherwise fallback to legacy
+    let iters;
+    if (typeof iterations === 'number') {
+      iters = iterations;
+    } else if (typeof version === 'number' && VAULT_VERSIONS[version]) {
+      iters = VAULT_VERSIONS[version].iterations;
+    } else {
+      // Legacy vault without version = v1 (350k iterations)
+      iters = VAULT_VERSIONS[1].iterations;
+    }
+    
+    const key = await deriveKey(password, fromB64(salt), iters);
+    const decrypted = await crypto.subtle.decrypt(
+      {name: "AES-GCM", iv: fromB64(iv)},
+      key,
+      fromB64(ciphertext)
+    );
+    
+    // Auto-migrate if using old vault format
+    if (iters !== VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations) {
+      console.log(`[Vault] Migrating from ${iters} to ${VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations} iterations`);
+      await saveVault(new Uint8Array(decrypted), password);
+      // Key is now updated by saveVault
+    } else {
+      state.cryptoKey = key;
+    }
+    
+    return state.cryptoKey;
   }
 
   async function saveKeysEncrypted(){
@@ -1699,12 +1754,23 @@ function openExportWifModal(){
       }
       
       try {
-        // Verify password by trying to decrypt vault
+        // Verify password by trying to decrypt vault (with legacy support)
         const resp = await chrome.runtime.sendMessage({ type:"QTC_LOAD_ENCRYPTED" });
         if(!resp?.payload) throw new Error("Vault not found");
         
-        const {salt, iv, ciphertext} = resp.payload;
-        const key = await window.deriveKey(pwd, window.fromB64(salt));
+        const {salt, iv, ciphertext, version, iterations} = resp.payload;
+        
+        // Determine iterations for legacy vault support
+        let iters;
+        if (typeof iterations === 'number') {
+          iters = iterations;
+        } else if (typeof version === 'number') {
+          iters = version === 1 ? 350000 : 600000;
+        } else {
+          iters = 350000; // Legacy vault without version
+        }
+        
+        const key = await window.deriveKey(pwd, window.fromB64(salt), iters);
         
         // Try to decrypt - will throw if password wrong
         await crypto.subtle.decrypt({name:"AES-GCM", iv: window.fromB64(iv)}, key, window.fromB64(ciphertext));

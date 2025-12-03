@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Qverse Wallet",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Qverse is an open-source wallet for the Qubitcoin blockchain.",
   "action": {
     "default_title": "Qverse wallet",
