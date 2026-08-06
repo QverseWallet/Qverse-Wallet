@@ -26,7 +26,7 @@ async function __qtcEnsureOffscreenReady(){
       await chrome.offscreen.createDocument({
         url: 'offscreen/offscreen.html',
         reasons: ['IFRAME_SCRIPTING'],
-        justification: 'Keep in-memory unlock session for QTC wallet (10 min TTL)'
+        justification: 'Holds the unlocked wallet session in memory until its configurable auto-lock TTL expires'
       });
     }
   }catch(e){ /* ignore */ }
@@ -58,7 +58,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         const BROADCAST_URL = 'https://explorer-api.superquantum.io/tx';
-        const res = await fetch(BROADCAST_URL, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: msg.rawtx });
+        // Bounded so a hung explorer cannot leave the popup waiting forever on
+        // a send it cannot tell succeeded or failed.
+        const res = await fetch(BROADCAST_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'text/plain' },
+          body: msg.rawtx,
+          signal: AbortSignal.timeout(30000)
+        });
         const body = await res.text();
         sendResponse({ ok: res.ok, status: res.status, body });
         return;
