@@ -10,7 +10,7 @@
   }
 
   // Global state (NOT exposed directly for security)
-  const state = { unlocked:false, cryptoKey:null, keys:[] };
+  const state = { unlocked:false, cryptoKey:null, vaultKeyRaw:null, keys:[], keysUnreadable:false };
   
   // Secure state accessors - only expose what's needed
   window.getWalletState = () => ({ 
@@ -26,7 +26,15 @@
   };
   window.isUnlocked = () => state.unlocked;
   
-  // Legacy compatibility - limited read-only access
+  // Legacy compatibility shim for the code that still lives outside this IIFE
+  // (buildAndSignTx, renderActivity, updateWalletSelector).
+  //
+  // NOTE: this is NOT a security boundary, despite what earlier comments here
+  // claimed. `keys` is the live array and its entries are the real objects, so
+  // window.state.keys[0].wif returns a private key. A copy would not help
+  // either, since the entries would still be shared. It is acceptable only
+  // because the popup runs in its own isolated world with no content scripts
+  // and no externally_connectable, so no page can reach this object.
   Object.defineProperty(window, 'state', {
     get: function() {
       return { 
@@ -38,144 +46,136 @@
     configurable: false
   });
 
-  // notify
-  function notify(msg,type="info"){ if(type!=="error") return; const n=$('#notif'); if(!n) return; n.textContent=String(msg); n.className='notify error'; n.style.display='block'; setTimeout(()=> n.style.display='none', 4000); }
+  // Escapes values before they are interpolated into innerHTML. Transaction
+  // ids and counterparty addresses come straight from the explorer API, so a
+  // compromised or hostile explorer could otherwise inject markup into the
+  // popup. The CSP (script-src 'self') stops it from executing script, but
+  // injected markup could still fake wallet UI to phish the user.
+  function escapeHtml(v){
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+  window.escapeHtml = escapeHtml;
+
+  // Two bugs lived here in v0.3.3:
+  //   1. `if(type!=="error") return` silently dropped every success message, so
+  //      "WIF copied", "Transaction sent" and "Wallet locked" never appeared.
+  //   2. it assigned className='notify error', wiping the `notif` class that
+  //      the stylesheet actually targets, so even errors rendered unstyled.
+  let __notifyTimer = null;
+  function notify(msg, type = "info"){
+    const n = $('#notif');
+    if(!n) return;
+    const kind = (type === 'error' || type === 'success') ? type : 'info';
+    n.textContent = String(msg);
+    n.className = 'notif ' + kind;
+    n.style.display = 'block';
+    if(__notifyTimer) clearTimeout(__notifyTimer);
+    __notifyTimer = setTimeout(()=>{ n.style.display = 'none'; }, kind === 'error' ? 6000 : 3000);
+  }
   window.notify = notify;
 
-  // === QTC: 10‑min session envelope 
-  const QTC_SESS = 'qtcSession';
-  const QTC_SESS_ENV = 'qtcSessionEnv';
-  const QTC_SESS_TTL = 10*60*1000; // 10 min
+  // === Unlocked session ===
+  //
+  // The unlocked keys live in exactly one place: the offscreen document's
+  // memory. Versions up to v0.3.3 also wrote an "encrypted" copy into
+  // chrome.storage.session, but stored the AES key inside the *same object* as
+  // the ciphertext (`qtcTempKeysEnc = {key, iv, ct}`, and `qtcSession.key`
+  // beside `qtcSessionEnv.ct`). Anything able to read that storage could read
+  // the key sitting next to the ciphertext, so it was equivalent to storing
+  // the WIFs in the clear. Those copies are gone: if the offscreen document is
+  // torn down, the session fails closed and the password is required again.
+  const LEGACY_SESSION_BLOBS = ['qtcSession', 'qtcSessionEnv', 'qtcTempKeysEnc'];
 
-  // Robust Base64 helpers (sin spread)
-  function b64FromBytes(u8){
-    let s='', CHUNK=0x8000;
-    for(let i=0;i<u8.length;i+=CHUNK){
-      s += String.fromCharCode.apply(null, u8.subarray(i, i+CHUNK));
-    }
-    return btoa(s);
-  }
-  function bytesFromB64(b64){
-    const s = atob(b64);
-    const out = new Uint8Array(s.length);
-    for(let i=0;i<s.length;i++) out[i] = s.charCodeAt(i);
-    return out;
-  }
-
-  // Promisified storage.session (compatible MV3)
-  const sessGet    = (keys)=>new Promise((res,rej)=>{ try{ chrome.storage.session.get(keys, v=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(v); }); }catch(e){ rej(e);} });
-  const sessSet    = (obj)=> new Promise((res,rej)=>{ try{ chrome.storage.session.set(obj, ()=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(); }); }catch(e){ rej(e);} });
-  const sessRemove = (keys)=>new Promise((res,rej)=>{ try{ chrome.storage.session.remove(keys, ()=>{ if(chrome.runtime.lastError) rej(chrome.runtime.lastError); else res(); }); }catch(e){ rej(e);} });
-
-  async function makeSessionKey(){ return crypto.getRandomValues(new Uint8Array(32)); }
-  async function importSessKey(raw){ return crypto.subtle.importKey('raw', raw, {name:'AES-GCM'}, false, ['encrypt','decrypt']); }
-
-  async function setSessionEnvelope(){
-    try{
-      if(!state.keys || !state.keys.length) return;
-      const rawKey = await makeSessionKey();
-      const key = await importSessKey(rawKey);
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const plain = new TextEncoder().encode(JSON.stringify({keys: state.keys}));
-      const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, plain));
-      const expiresAt = Date.now() + QTC_SESS_TTL;
-      await sessSet({ [QTC_SESS]: { key: b64FromBytes(rawKey), expiresAt },
-                      [QTC_SESS_ENV]: { iv: b64FromBytes(iv), ct: b64FromBytes(ct) } });
-    }catch(e){ /* noop */ }
-  }
-
-  async function tryRestoreEnvelope(){
-    try{
-      const got = await sessGet([QTC_SESS, QTC_SESS_ENV]);
-      const sess = got[QTC_SESS]; const env = got[QTC_SESS_ENV];
-      if(!sess || !env) return false;
-      if(Date.now() > (sess.expiresAt||0)){ await sessRemove([QTC_SESS,QTC_SESS_ENV]); return false; }
-      const raw = bytesFromB64(sess.key);
-      const iv  = bytesFromB64(env.iv);
-      const ct  = bytesFromB64(env.ct);
-      const key = await importSessKey(raw);
-      const plain = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct));
-      const obj = JSON.parse(new TextDecoder().decode(plain));
-      if(obj && Array.isArray(obj.keys)){
-        state.keys = obj.keys;
-        state.unlocked = true;
-        return true;
-      }
-      return false;
-    }catch(e){ return false; }
-  }
-
-  async function touchEnvelope(){
-    try{
-      // Get TTL from storage
-      let ttl = 900000;
-      try {
-        const ttlData = await chrome.storage.local.get({qtcAutolockTTL: 900000});
-        ttl = ttlData.qtcAutolockTTL || 900000;
-      } catch(e){}
-      
-      // Update QTC_SESS envelope
-      const got = await sessGet([QTC_SESS]);
-      const sess = got[QTC_SESS]; 
-      if(sess) {
-        sess.expiresAt = (ttl === 0) ? 0 : (Date.now() + ttl);
-        await sessSet({ [QTC_SESS]: sess });
-      }
-      
-      // Update qtcTempKeysEnc expiration
-      const r = await chrome.storage.session.get({qtcTempKeysEnc: null});
-      if(r && r.qtcTempKeysEnc){
-        r.qtcTempKeysEnc.expiresAt = (ttl === 0) ? 0 : (Date.now() + ttl);
-        await chrome.storage.session.set({qtcTempKeysEnc: r.qtcTempKeysEnc});
-      }
-    }catch(e){}
-  }
-  async function clearEnvelope(){ 
-    try{ 
-      await sessRemove([QTC_SESS,QTC_SESS_ENV]); 
-      await chrome.storage.session.remove(['qtcTempKeysEnc']);
-    }catch(e){} 
-  }
-  window.clearEnvelope = clearEnvelope;
-
-  // Expose for recovery
-  window.tryRestoreEnvelope = tryRestoreEnvelope;
-  window.setSessionEnvelope = setSessionEnvelope;
-
-  function startSessKeepAlive(){
-    // Only renew on actual user activity, NOT on interval
-    ['click','keydown','mousemove'].forEach(ev => document.addEventListener(ev, ()=>touchEnvelope(), {passive:true}));
-  }
-
-  // Try to restore from robust storage.session (ENCRYPTED)
-  async function tryRestoreFromStorageSession(){
+  const sendMsg = (m) => new Promise(res => {
     try {
-      // Try new encrypted format first
-      const r = await chrome.storage.session.get({qtcTempKeysEnc: null});
-      if(r && r.qtcTempKeysEnc && r.qtcTempKeysEnc.key && r.qtcTempKeysEnc.iv && r.qtcTempKeysEnc.ct){
-        const enc = r.qtcTempKeysEnc;
-        
-        // Check expiration (expiresAt=0 means never expire)
-        if(enc.expiresAt && enc.expiresAt !== 0 && Date.now() > enc.expiresAt){
-          // Session expired - clear it
-          await chrome.storage.session.remove(['qtcTempKeysEnc']);
-          return false;
-        }
-        
-        const sessKey = bytesFromB64(enc.key);
-        const iv = bytesFromB64(enc.iv);
-        const ct = bytesFromB64(enc.ct);
-        const cryptoKey = await importSessKey(sessKey);
-        const plaintext = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM', iv}, cryptoKey, ct));
-        const keys = JSON.parse(new TextDecoder().decode(plaintext));
-        if(Array.isArray(keys) && keys.length > 0){
-          state.keys = keys;
-          state.unlocked = true;
-          return true;
-        }
-      }
+      chrome.runtime.sendMessage(m, (r) => { void chrome.runtime.lastError; res(r); });
+    } catch(e){ res(null); }
+  });
+
+  // Wallets upgrading from <= v0.3.3 still have key material sitting in
+  // storage.session. Wipe it on first run of the new build.
+  async function purgeLegacySessionBlobs(){
+    try { await chrome.storage.session.remove(LEGACY_SESSION_BLOBS); } catch(e){}
+  }
+
+  const sessionQuery = ()     => sendMsg({ type:'QTC_SESS_QUERY' });
+  const sessionTouch = ()     => sendMsg({ type:'QTC_SESS_TOUCH' });
+
+  async function clearSession(){
+    state.unlocked = false;
+    state.cryptoKey = null;
+    state.vaultKeyRaw = null;
+    state.keys = [];
+    await sendMsg({ type:'QTC_SESS_CLEAR' });
+    await purgeLegacySessionBlobs();
+  }
+  window.clearSession = clearSession;
+
+  // Renews the session on user activity. Throttled hard: mousemove fires
+  // continuously and every call is a chrome.runtime round-trip to the offscreen
+  // document, so the unthrottled version flooded the message channel with
+  // hundreds of messages a second. Auto-lock TTLs are minutes, so 30s of
+  // granularity costs nothing.
+  const KEEPALIVE_THROTTLE_MS = 30000;
+  function startSessKeepAlive(){
+    if (window.__qtcKeepAliveBound) return;
+    window.__qtcKeepAliveBound = true;
+    let lastTouch = 0;
+    const touch = () => {
+      const now = Date.now();
+      if (now - lastTouch < KEEPALIVE_THROTTLE_MS) return;
+      lastTouch = now;
+      sessionTouch();
+    };
+    ['click','keydown','mousemove','scroll'].forEach(ev =>
+      document.addEventListener(ev, touch, {passive:true})
+    );
+  }
+
+  // Push the user's auto-lock preference into the offscreen document. It holds
+  // the TTL in memory only, so it has to be re-applied every time the popup
+  // opens or the session would silently fall back to the 15 min default.
+  const AUTOLOCK_KEY = 'qtcAutolockTTL';
+  const AUTOLOCK_DEFAULT = 900000;
+  async function applyAutolockTTL(){
+    try {
+      const data = await chrome.storage.local.get({ [AUTOLOCK_KEY]: AUTOLOCK_DEFAULT });
+      let ttl = data[AUTOLOCK_KEY];
+      if (typeof ttl !== 'number' || ttl < 0) ttl = AUTOLOCK_DEFAULT;
+      await sendMsg({ type:'QTC_SESS_SET_TTL', ttl });
     } catch(e){}
-    return false;
+  }
+  window.applyAutolockTTL = applyAutolockTTL;
+
+  // Restore an unlocked session from the offscreen document.
+  //
+  // The raw vault key travels with the WIFs so that adding an address after a
+  // popup reopen can still persist to chrome.storage.local. Without it,
+  // state.cryptoKey stayed null, saveKeysEncrypted() returned early, and any
+  // address generated in a restored session was silently dropped on the next
+  // lock -- losing the funds sent to it.
+  async function restoreFromOffscreen(){
+    try{
+      const r = await sessionQuery();
+      if (!(r && r.ok && Array.isArray(r.keys) && r.keys.length)) return false;
+      state.keys = r.keys;
+      state.unlocked = true;
+      if (r.vaultKey){
+        try {
+          const raw = fromB64(r.vaultKey);
+          state.vaultKeyRaw = r.vaultKey;
+          state.cryptoKey = await crypto.subtle.importKey(
+            'raw', raw, {name:'AES-GCM'}, false, ['encrypt','decrypt']
+          );
+        } catch(e){ /* fall through: mutations will be blocked by requireVaultKey */ }
+      }
+      return true;
+    }catch(e){ return false; }
   }
 
 // Active wallet index (Global)
@@ -240,19 +240,57 @@ try {
   };
   const CURRENT_VAULT_VERSION = 2;
 
-  async function deriveKey(password, salt, iterations = VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations) {
+  // `extractable` is opt-in: only the unlock path needs the raw bytes, so the
+  // key can be handed to the offscreen session. Password-verification callers
+  // (Export WIF) leave it false.
+  async function deriveKey(password, salt, iterations = VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations, extractable = false) {
     const enc = new TextEncoder();
     const mat = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
     return crypto.subtle.deriveKey(
       {name: "PBKDF2", salt, iterations, hash: "SHA-256"},
       mat,
       {name: "AES-GCM", length: 256},
-      false,
+      extractable,
       ["encrypt", "decrypt"]
     );
   }
+
+  // Installs the freshly derived vault key as the active one and caches its raw
+  // form so restoreFromOffscreen() can rebuild it after a popup reopen.
+  async function adoptVaultKey(key){
+    state.cryptoKey = key;
+    try {
+      const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key));
+      state.vaultKeyRaw = toB64(raw);
+    } catch(e){ state.vaultKeyRaw = null; }
+    return key;
+  }
+
+  // Key-list mutations must be durably persisted, which needs the vault key.
+  // Without this guard a restored session would accept a new address, keep it
+  // only in memory, and lose it at the next lock.
+  function requireVaultKey(){
+    if(!state.cryptoKey){
+      throw new Error("Locked vault: enter your password again to add or change addresses.");
+    }
+    // Never write over key material we failed to read back. See loadKeysEncrypted().
+    if(state.keysUnreadable){
+      throw new Error("Stored keys could not be decrypted; refusing to overwrite them.");
+    }
+  }
   window.deriveKey = deriveKey;
-  function toB64(bytes){ return btoa(String.fromCharCode(...bytes)); }
+  // Chunked rather than `String.fromCharCode(...bytes)`: the spread form throws
+  // RangeError once the array passes ~130k entries, which the encrypted key
+  // list reaches for a wallet with enough addresses.
+  function toB64(bytes){
+    let s = '';
+    const CHUNK = 0x8000;
+    const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
+    for(let i = 0; i < u8.length; i += CHUNK){
+      s += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+    }
+    return btoa(s);
+  }
   function fromB64(str){ return new Uint8Array(atob(str).split('').map(c=>c.charCodeAt(0))); }
   window.fromB64 = fromB64;
 
@@ -260,7 +298,7 @@ try {
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const iterations = VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations;
-    const key = await deriveKey(password, salt, iterations);
+    const key = await deriveKey(password, salt, iterations, true);
     const ct = new Uint8Array(await crypto.subtle.encrypt({name: "AES-GCM", iv}, key, seedBytes));
     await chrome.runtime.sendMessage({
       type: "QTC_STORE_ENCRYPTED",
@@ -272,7 +310,7 @@ try {
         ciphertext: toB64(ct)
       }
     });
-    state.cryptoKey = key;
+    await adoptVaultKey(key);
     return key;
   }
 
@@ -293,126 +331,116 @@ try {
       iters = VAULT_VERSIONS[1].iterations;
     }
     
-    const key = await deriveKey(password, fromB64(salt), iters);
+    const key = await deriveKey(password, fromB64(salt), iters, true);
     const decrypted = await crypto.subtle.decrypt(
       {name: "AES-GCM", iv: fromB64(iv)},
       key,
       fromB64(ciphertext)
     );
-    
-    // Auto-migrate if using old vault format
+
+    // Auto-migrate old vaults to the current iteration count. saveVault()
+    // adopts the new key itself, so only the non-migrating branch adopts here.
     if (iters !== VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations) {
-      console.log(`[Vault] Migrating from ${iters} to ${VAULT_VERSIONS[CURRENT_VAULT_VERSION].iterations} iterations`);
       await saveVault(new Uint8Array(decrypted), password);
-      // Key is now updated by saveVault
     } else {
-      state.cryptoKey = key;
+      await adoptVaultKey(key);
     }
-    
+
     return state.cryptoKey;
   }
 
   async function saveKeysEncrypted(){
-    if(!state.cryptoKey) return;
+    requireVaultKey();
     const enc=new TextEncoder(); const iv=crypto.getRandomValues(new Uint8Array(12));
     const json=JSON.stringify(state.keys);
     const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM", iv}, state.cryptoKey, enc.encode(json)));
     await chrome.storage.local.set({ qtcKeys:{ iv:toB64(iv), ciphertext:toB64(ct) } });
   }
+  // Distinguishes "no keys stored yet" from "stored keys failed to decrypt".
+  // Conflating them destroyed wallets: a decrypt failure left state.keys empty,
+  // the UI showed an empty wallet with no error, and the next
+  // saveKeysEncrypted() then overwrote qtcKeys with that empty list -- wiping
+  // every WIF, and with them the funds.
   async function loadKeysEncrypted(){
+    state.keysUnreadable = false;
     if(!state.cryptoKey){ state.keys=[]; renderKeys(); return; }
-    const st=await chrome.storage.local.get({ qtcKeys:null }); if(!st.qtcKeys){ state.keys=[]; renderKeys(); return; }
+    const st = await chrome.storage.local.get({ qtcKeys:null });
+    if(!st.qtcKeys){ state.keys=[]; renderKeys(); return; }
     try{
       const dec=new TextDecoder(); const iv=fromB64(st.qtcKeys.iv); const ct=fromB64(st.qtcKeys.ciphertext);
       const plain=await crypto.subtle.decrypt({name:"AES-GCM", iv}, state.cryptoKey, ct);
-      state.keys = JSON.parse(dec.decode(new Uint8Array(plain))) || [];
-    }catch(e){ state.keys=[]; }
+      const parsed = JSON.parse(dec.decode(new Uint8Array(plain)));
+      if(!Array.isArray(parsed)) throw new Error("stored key list is not an array");
+      state.keys = parsed;
+    }catch(e){
+      // Latch the failure so requireVaultKey() blocks every write until the
+      // user has had a chance to back the storage up.
+      state.keysUnreadable = true;
+      state.keys = [];
+      console.error("loadKeysEncrypted:", e);
+      notify("Your stored keys could not be decrypted. Nothing has been changed — back up the extension storage before adding any address.", "error");
+    }
     renderKeys();
   }
   window.saveKeysEncrypted=saveKeysEncrypted; window.loadKeysEncrypted=loadKeysEncrypted;
 
-  function ensureRandom(){
-    if (window.Crypto && Crypto.util && typeof Crypto.util.randomBytes !== "function") {
-      Crypto.util.randomBytes = function(n){ const b=new Uint8Array(n); crypto.getRandomValues(b); return Array.from(b); };
+  // Refuses to let the wallet generate keys unless app/js/secure-random.js has
+  // taken over coinjs's entropy. Without it, coinbin falls back to Math.random
+  // and every private key it produces is predictable.
+  function assertSecureRandom(){
+    if (typeof window.coinjs === "undefined" || coinjs.__secureRandom !== true) {
+      throw new Error("Insecure RNG: secure-random.js is not active. Refusing to generate keys.");
     }
   }
   function detectCoinjs(){
-    ensureRandom();
-    const ok = typeof window.coinjs !== "undefined" && coinjs && typeof coinjs.newKeys==="function";
-    $("#coinjsStatus").textContent = ok ? "coinjs OK: open‑source logic." : "coinjs NOT detected.";
+    const ok = typeof window.coinjs !== "undefined" && coinjs && typeof coinjs.newKeys==="function"
+               && coinjs.__secureRandom === true;
+    const el = $("#coinjsStatus");
+    if (el) el.textContent = ok ? "coinjs OK: open-source logic." : "coinjs NOT detected or RNG unsafe.";
     return ok;
   }
 
-  // Helper to sync keys (ENCRYPTED)
+  // Hand the unlocked material to the offscreen document, which is the only
+  // place it is held for the duration of the session.
   async function updateSessionKeys(){
     if(!state.keys || !state.keys.length) return;
-    
-    // 1. Save to storage.session ENCRYPTED (Robust MV3 memory persistence)
-    try {
-      // Generate ephemeral key for session encryption
-      const sessKey = await makeSessionKey();
-      const cryptoKey = await importSessKey(sessKey);
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const plaintext = new TextEncoder().encode(JSON.stringify(state.keys));
-      const ciphertext = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM', iv}, cryptoKey, plaintext));
-      
-      // Get TTL from storage (default 15 min)
-      let ttl = 900000;
-      try {
-        const ttlData = await chrome.storage.local.get({qtcAutolockTTL: 900000});
-        ttl = ttlData.qtcAutolockTTL || 900000;
-      } catch(e){}
-      
-      // Calculate expiresAt (0 = never)
-      const expiresAt = (ttl === 0) ? 0 : (Date.now() + ttl);
-      
-      await chrome.storage.session.set({
-        qtcTempKeysEnc: {
-          key: b64FromBytes(sessKey),
-          iv: b64FromBytes(iv),
-          ct: b64FromBytes(ciphertext),
-          expiresAt: expiresAt
-        }
-      });
-    } catch(e){ /* silent */ }
-
-    // 2. Sync with Offscreen (Keep-alive) - still needs keys for session management
-    try {
-      const cleanKeys = state.keys.map(k => ({addr: k.addr, wif: k.wif}));
-      await new Promise(resolve => {
-        chrome.runtime.sendMessage({type:'QTC_SESS_OPEN', keys: cleanKeys}, resolve);
-      });
-    } catch(e){}
+    const cleanKeys = state.keys.map(k => ({addr: k.addr, wif: k.wif}));
+    await sendMsg({
+      type: 'QTC_SESS_OPEN',
+      keys: cleanKeys,
+      vaultKey: state.vaultKeyRaw || null
+    });
   }
 
-  async function pushKey(addr, wif){ 
-    state.keys.push({addr,wif}); 
-    renderKeys(); 
-    
-    // 1. Persist to Encrypted Local Storage
-    try { await saveKeysEncrypted(); } catch(e){ notify("Could not save keys","error"); }
-    
-    // 2. Update Active Session
+  // Adds a key only if it can be durably persisted. On failure the in-memory
+  // list is rolled back, so the UI never shows an address whose WIF would
+  // vanish at the next lock.
+  async function pushKey(addr, wif){
+    requireVaultKey();
+    state.keys.push({addr, wif});
+    try {
+      await saveKeysEncrypted();
+    } catch(e){
+      state.keys.pop();
+      notify("Could not save keys: " + (e.message || e), "error");
+      throw e;
+    }
+    renderKeys();
     await updateSessionKeys();
-
-    // 3. Update Session Envelope (Backup persistence)
-    try { await setSessionEnvelope(); } catch(e){}
-    
-    // 4. Refresh
-    fetchBalances().catch(()=>{}); 
+    fetchBalances().catch(()=>{});
   }
   function renderKeys(){
     const _al = document.querySelector("#addrList"); if(_al) _al.innerHTML = state.keys.map((k,i)=>`
       <div class="account-row flex items-center justify-between" data-idx="${i}">
         <div class="truncate">
           <div class="flex items-center gap-2">
-            <span class="copyIcon copyAddr" title="Copy" data-addr="${k.addr}" aria-label="Copy">📋</span>
-            <div class="font-mono truncate">${k.addr}</div>
+            <span class="copyIcon copyAddr" title="Copy" data-addr="${escapeHtml(k.addr)}" aria-label="Copy">📋</span>
+            <div class="font-mono truncate">${escapeHtml(k.addr)}</div>
           </div>
           <div class="text-xs opacity-70">idx ${i}</div>
         </div>
         <div class="flex items-center gap-3">
-          <div class="addrBalance font-mono text-sm" data-addr="${k.addr}">${formatQtc(k.balance || 0)}</div>
+          <div class="addrBalance font-mono text-sm" data-addr="${escapeHtml(k.addr)}">${formatQtc(k.balance || 0)}</div>
           <button class="btn btn-xs" data-action="export-wif" data-idx="${i}">WIF</button>
         </div>
       </div>
@@ -426,18 +454,24 @@ try {
     try { if(typeof renderMainAddressInline === 'function') renderMainAddressInline(); } catch(e){}
   }
 
-  async function exportWIF(){
-    if(!state.keys.length) return notify("No keys yet","error");
-    try{ await navigator.clipboard.writeText(state.keys[state.keys.length-1].wif); notify("WIF copied","success"); }catch(e){ notify("Could not copy","error"); }
-  }
-
-  function generateAddress(){
-    if(!detectCoinjs()) return notify("coinjs not available","error");
+  // Async because pushKey() must finish persisting before the caller shows the
+  // new address. Returns null on failure rather than a half-created key.
+  async function generateAddress(){
+    if(!detectCoinjs()){ notify("coinjs not available or RNG unsafe","error"); return null; }
     try{
+      assertSecureRandom();
+      requireVaultKey();
       const r = coinjs.newKeys();
-      pushKey(r.address, r.wif);
+      // Never hand back a key the library could not round-trip.
+      if(!r || !r.address || !r.wif) throw new Error("key generation returned nothing");
+      if(coinjs.wif2address(r.wif).address !== r.address) throw new Error("WIF/address mismatch");
+      await pushKey(r.address, r.wif);
       return r;
-    }catch(e){ console.error(e); notify("Error generating address: "+e.message,"error"); }
+    }catch(e){
+      console.error(e);
+      notify("Could not create address: " + (e.message || e), "error");
+      return null;
+    }
   }
   window.generateAddress = generateAddress;
 
@@ -469,29 +503,15 @@ try {
   // API endpoint
   const API = 'https://explorer-api.superquantum.io';
   
+  // Every explorer call gets a deadline. Without one a hung request left the
+  // Send button stuck on "Preparing…" forever, since the re-enable only runs
+  // once the await settles.
+  const API_TIMEOUT_MS = 15000;
   async function fetchAPI(path, options = {}) {
-    return fetch(`${API}${path}`, options);
+    return fetch(`${API}${path}`, { ...options, signal: AbortSignal.timeout(API_TIMEOUT_MS) });
   }
   
   window.fetchAPI = fetchAPI;
-
-  async function pendingIncomingViaUtxo(addrs){
-    let sum=0, cnt=0;
-    for(const a of addrs){
-      try{
-        const url = `/address/${encodeURIComponent(a)}/utxo`;
-        const r = await fetchAPI(url); const arr = await r.json();
-        if(Array.isArray(arr)){
-          for(const u of arr){
-            if(u && u.status && u.status.confirmed===false){
-              sum += (u.value||0)/1e8; cnt += 1;
-            }
-          }
-        }
-      }catch(e){ /* ignore */ }
-    }
-    return {sum, cnt};
-  }
 
   async function pendingIncomingExternalViaUtxo(addrs){
     const myset = new Set(addrs);
@@ -667,60 +687,75 @@ try {
   }
   window.fetchBalances = fetchBalances;
 
-  window.__recalcTopFiatFromDom = window.__recalcTopFiatFromDom || (function(){
-    function num(t){ try{ return parseFloat(String(t||'').replace(/[^0-9.\-]/g,'')) || 0; }catch(_){ return 0; } }
-    function recalc(){
-      try{
-        var balTxt = (document.querySelector('#totalBalance')||{}).textContent || '0';
-        var bal = num(balTxt);
-        var price = num((document.querySelector('#qtcPrice')||{}).textContent);
-        var usd = bal * price;
-        var usdEl = document.querySelector('#totalFiat');
-        if(usdEl){
-          if (bal === 0 || Math.abs(usd) < 1e-12){
-            usdEl.textContent = '$0';
-          }else{
-            usdEl.textContent = '$' + usd.toFixed(2);
-          }
-        }
-      }catch(e){}
-    }
-    return recalc;
-  })();
-
   async function unlock(){
     const pwd=$("#password").value; 
     if(!pwd) return notify("Enter your password","error");
     try{
       await loadVault(pwd);
-    }catch(e){ 
-      return notify("Wrong password","error"); 
+    }catch(e){
+      // "Vault not found" is not a wrong password -- it means there is nothing
+      // on this device yet. Reporting both the same way sent first-time users
+      // chasing a password they never set.
+      if(/not found/i.test((e && e.message) || '')){
+        await refreshAuthMode();
+        return notify("No wallet on this device yet — create one first.","error");
+      }
+      return notify("Wrong password","error");
     }
-    // Password correct, proceed
-    try { await setSessionEnvelope(); } catch(e){}
-    try { startSessKeepAlive(); } catch(e){}
+    // Password correct. Don't leave it sitting in the DOM.
+    if ($("#password")) $("#password").value = "";
+    await purgeLegacySessionBlobs();
     state.unlocked=true;
     try { detectCoinjs(); } catch(e){}
     try { await loadKeysEncrypted(); } catch(e){}
-    try { populateFromSelect(); } catch(e){}
     // Show wallet
-    setVisible("#authSection", false); 
+    setVisible("#authSection", false);
     setVisible("#walletSection", true);
+    await updateSessionKeys();
+    startSessKeepAlive();
     try { await fetchBalances(); } catch(e){}
-    // Ensure session is synced
-    updateSessionKeys();
     notify("Vault unlocked","success");
   }
+  // A vault password is the only thing standing between an attacker with disk
+  // access and the WIFs. v0.3.3 accepted any non-empty string, so 600k PBKDF2
+  // iterations were protecting passwords like "a". There was also no
+  // confirmation field, which made a typo an unrecoverable loss of funds.
+  const WEAK_PASSWORDS = new Set([
+    'password','password1','12345678','123456789','1234567890','qwertyui','qwerty123',
+    'iloveyou','letmein1','admin123','abc12345','11111111','00000000','bitcoin1','walletpw'
+  ]);
+  function validatePassword(pwd){
+    if(typeof pwd !== 'string' || pwd.length === 0) return "Create a password";
+    if(pwd.length < 8) return "Password must be at least 8 characters";
+    if(new Set(pwd).size < 4) return "Password is too repetitive";
+    if(/^\d+$/.test(pwd)) return "Password cannot be only digits";
+    if(WEAK_PASSWORDS.has(pwd.toLowerCase())) return "That password is too common";
+    return null;
+  }
+  // Shared by vault creation and the import-WIF flow, which also creates a vault.
+  function readNewPassword(){
+    const pwd = $("#password") ? $("#password").value : "";
+    const err = validatePassword(pwd);
+    if(err){ notify(err, "error"); return null; }
+    const wrap = $("#passwordConfirmField");
+    const confirmEl = $("#passwordConfirm");
+    if(wrap && confirmEl && wrap.style.display !== 'none' && confirmEl.value !== pwd){
+      notify("Passwords do not match", "error");
+      return null;
+    }
+    return pwd;
+  }
+
   async function createVault(){
-    const pwd=$("#password").value; if(!pwd) return notify("Create a password","error");
+    const pwd = readNewPassword();
+    if(pwd === null) return;
     const seed=crypto.getRandomValues(new Uint8Array(32));
     await saveVault(seed, pwd);
 
     detectCoinjs();
-    let first=null; try{ first = generateAddress(); }catch(e){ console.error(e); }
-    state.keys = state.keys || [];
-    await saveKeysEncrypted();
-    await updateSessionKeys();
+    // pushKey() inside generateAddress() already persists and syncs the session.
+    const first = await generateAddress();
+    if(!first) return; // generateAddress already reported why
 
     const modal = document.getElementById("recoveryModal");
     const wifEl  = document.getElementById("recoveryWif");
@@ -766,8 +801,8 @@ try {
           state.unlocked = true;
           setVisible("#authSection", false);
           setVisible("#walletSection", true);
-          try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-          try{ await loadKeysEncrypted(); populateFromSelect(); await fetchBalances(); }catch(e){}
+          try{ await updateSessionKeys(); startSessKeepAlive(); }catch(e){}
+          try{ await loadKeysEncrypted(); await fetchBalances(); }catch(e){}
           notify("Wallet created","success");
           const cb=document.querySelector("#createBtn"); if(cb) cb.style.display="none";
           try{
@@ -785,7 +820,7 @@ try {
     state.unlocked=true;
     setVisible("#authSection", false);
     setVisible("#walletSection", true);
-    try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
+    try{ await updateSessionKeys(); startSessKeepAlive(); }catch(e){}
     notify("Wallet created","success");
   }
 
@@ -797,16 +832,25 @@ try {
     }catch(e){ return false; }
   }
 
+  // Repeated calls with the same mode are a no-op. session-gate.js re-evaluates
+  // the auth pane every 5 seconds, and without this guard each poll rewrote the
+  // form -- including clearing the confirm-password field the user was typing
+  // into.
+  let __authMode = null;
   function setAuthMode(mode){
+    if(__authMode === mode) return;
+    __authMode = mode;
     const title = document.getElementById('authTitle');
     const pwdLabel = document.getElementById('passwordLabel');
     const pwdHint = document.getElementById('passwordHint');
     const unlockBtn = document.getElementById('unlockBtn');
     const createBtn = document.getElementById('createBtn');
+    const confirmField = document.getElementById('passwordConfirmField');
     if(mode==='create'){
       if(title) { title.textContent = 'Create wallet'; title.style.textAlign = 'center'; }
       if(pwdLabel) pwdLabel.textContent = 'Password for your new wallet';
-      if(pwdHint) pwdHint.textContent = "We'll use this password to encrypt your local vault. It's not recoverable if you forget it.";
+      if(pwdHint) pwdHint.textContent = "At least 8 characters. This encrypts your local vault and cannot be recovered if you forget it.";
+      if(confirmField) confirmField.style.display = '';
       if(unlockBtn) unlockBtn.style.display = 'none';
       if(createBtn){ createBtn.style.display=''; createBtn.textContent='Create wallet'; }
       const cta=document.getElementById('importWifCta'); if(cta) cta.style.display='';
@@ -814,12 +858,25 @@ try {
       if(title) title.textContent = 'Unlock';
       if(pwdLabel) pwdLabel.textContent = 'Password';
       if(pwdHint) pwdHint.textContent = '';
+      if(confirmField){ confirmField.style.display = 'none'; const c = document.getElementById('passwordConfirm'); if(c) c.value = ''; }
       if(unlockBtn) unlockBtn.style.display = '';
       const cta=document.getElementById('importWifCta'); if(cta) cta.style.display='none';
       if(createBtn){ createBtn.style.display='none'; }
     }
   }
   window.setAuthMode = setAuthMode;
+
+  // Single source of truth for which auth screen to show. Anything that reveals
+  // the auth pane must go through this rather than assuming a mode: session-gate
+  // used to hardcode 'unlock', which flipped a first-time user's create-wallet
+  // form mid-typing and then reported "Wrong password" against a vault that did
+  // not exist.
+  async function refreshAuthMode(){
+    const exists = await hasVault();
+    setAuthMode(exists ? 'unlock' : 'create');
+    return exists;
+  }
+  window.refreshAuthMode = refreshAuthMode;
 
   async function startImportWifFlow(){
     const modal = document.getElementById('importWifModal');
@@ -842,11 +899,8 @@ try {
           if(!wif) return notify('Paste your WIF', 'error');
           // Initialize vault if needed using the password field
           if(!state.cryptoKey){
-            const pwdInput = document.getElementById('password');
-            const pwd = (pwdInput && pwdInput.value) ? pwdInput.value : '';
-            if(!pwd){
-              return notify('Set a password above first to encrypt your vault, then import your WIF.', 'error');
-            }
+            const pwd = readNewPassword();
+            if(pwd === null) return;
             try{
               const seed = crypto.getRandomValues(new Uint8Array(32));
               await saveVault(seed, pwd);
@@ -856,43 +910,28 @@ try {
             }
           }
           detectCoinjs();
-          let addr='';
-          try{
-            if(typeof coinjs.wif2address === 'function'){ addr = (coinjs.wif2address(wif)||{}).address || ""; }
-          }catch(e){}
-          if(!addr){ return notify('Invalid WIF', 'error'); }
-          pushKey(addr, wif);
-          try{ await saveKeysEncrypted(); }catch(_){}
+          // Derive the address and require that it validates, so a mistyped or
+          // truncated WIF is rejected here rather than producing an address
+          // whose funds can never be spent.
+          let addr = '';
+          try{ addr = (coinjs.wif2address(wif) || {}).address || ""; }catch(e){}
+          if(!addr || !isValidQtcAddress(addr)){ return notify('Invalid WIF', 'error'); }
+          if(state.keys.some(k => k && k.addr === addr)){
+            return notify('That key is already in this wallet', 'error');
+          }
+          await pushKey(addr, wif);
           notify('WIF imported', 'success');
           closeModal();
           
           state.unlocked = true;
           setVisible('#authSection', false);
           setVisible('#walletSection', true);
-          try{ await setSessionEnvelope(); startSessKeepAlive(); }catch(e){}
-          try{ await loadKeysEncrypted(); populateFromSelect(); await fetchBalances(); }catch(e){}
+          try{ await updateSessionKeys(); startSessKeepAlive(); }catch(e){}
+          try{ await loadKeysEncrypted(); await fetchBalances(); }catch(e){}
           try{ const cb=document.querySelector('#createBtn'); if(cb && await hasVault()) cb.style.display='none'; }catch(_){}
         }catch(e){ console.error(e); notify('Could not import', 'error'); }
       });
     }
-  }
-
-  async function enterWalletAfterAuth(){
-    try{
-      if (typeof saveKeysEncrypted === 'function') {
-        try { await saveKeysEncrypted(); } catch(e) { console.warn('saveKeysEncrypted:', e); }
-      }
-      await new Promise(r => setTimeout(r, 60));
-      if (typeof loadKeysEncrypted === 'function') {
-        try { await loadKeysEncrypted(); } catch(e) { console.warn('loadKeysEncrypted:', e); }
-      }
-      if (typeof populateFromSelect === 'function') {
-        try { populateFromSelect(); } catch(e) { console.warn('populateFromSelect:', e); }
-      }
-      if (typeof fetchBalances === 'function') {
-        try { await fetchBalances(); } catch(e) { console.warn('fetchBalances:', e); }
-      }
-    }catch(e){ console.warn('enterWalletAfterAuth:', e); }
   }
 
   function bindUI(){
@@ -950,128 +989,90 @@ try {
 
   document.addEventListener("DOMContentLoaded", async ()=>{ 
     try{ startAutoRefresh(); }catch(e){}
-    try{ setAuthMode("create"); }catch(e){}
-    bindUI(); populateFromSelect(); try{ setAuthMode("create"); }catch(e){}
+    bindUI();
 
-    // === Session Recovery Strategy ===
-    if(!state.unlocked){
-        let recovered = false;
-        
-        // 1. Try fast storage.session (decrypted buffer)
-        if(await tryRestoreFromStorageSession()){
-           recovered = true;
-        } 
-        // 2. Try envelope storage.session (encrypted buffer)
-        else {
-            try {
-              if(await tryRestoreEnvelope()) recovered = true;
-            } catch(e){}
-        }
+    // Drop any key material left in storage.session by <= v0.3.3.
+    purgeLegacySessionBlobs();
 
-        if(recovered){
-           state.unlocked = true;
-           document.body.classList.remove('auth-mode');
-           setVisible("#authSection", false);
-           setVisible("#walletSection", true);
-           detectCoinjs();
-           
-           // Load and set active wallet
-           let savedIdx = 0;
-           try {
-             const st = await chrome.storage.local.get({activeWalletIndex:0});
-             if(st && typeof st.activeWalletIndex === 'number') savedIdx = st.activeWalletIndex;
-           } catch(e){}
+    // Must run before the restore below, so the session is evaluated against
+    // the user's configured TTL rather than the default.
+    await applyAutolockTTL();
 
-           setActiveWallet(savedIdx);
-           renderKeys();
-           // Sync offscreen just in case
-           updateSessionKeys();
-        }
+    // === Session recovery ===
+    // Single source: the offscreen document. If it has nothing live, the
+    // wallet stays locked.
+    if(!state.unlocked && await restoreFromOffscreen()){
+        document.body.classList.remove('auth-mode');
+        setVisible("#authSection", false);
+        setVisible("#walletSection", true);
+        detectCoinjs();
+
+        let savedIdx = 0;
+        try {
+          const st = await chrome.storage.local.get({activeWalletIndex:0});
+          if(st && typeof st.activeWalletIndex === 'number') savedIdx = st.activeWalletIndex;
+        } catch(e){}
+
+        setActiveWallet(savedIdx);
+        renderKeys();
+        startSessKeepAlive();
+        return;
     }
 
-    (async ()=>{
-      try{
-        const resp = await chrome.runtime.sendMessage({ type:"QTC_LOAD_ENCRYPTED" });
-        const exists = !!(resp && resp.payload);
-        const cb = document.querySelector('#createBtn'); const ub = document.querySelector('#unlockBtn');
-        if(exists){ try{ setAuthMode('unlock'); }catch(e){} if(cb) cb.style.display='none'; if(ub) ub.style.display=''; }
-        else { try{ setAuthMode('create'); }catch(e){} if(cb) cb.style.display=''; if(ub) ub.style.display='none'; } try{ setAuthMode(exists ? 'unlock' : 'create'); }catch(e){}
-      }catch(e){  }
-    })();
+    // No live session: the auth screen picks its own mode from whether a vault
+    // exists. setAuthMode() already handles the button visibility, so there is
+    // no second place deciding it.
+    await refreshAuthMode();
   });
 })();
 
-function populateFromSelect(){
-  const sel = document.querySelector('#easyFrom'); if(!sel) return;
-  sel.innerHTML = (state.keys||[]).map((k,i)=>`<option value="${i}">${k.addr} (idx ${i})</option>`).join("");
-}
+// ---- Transaction building ------------------------------------------------
+// Sizing, coin selection and fee arithmetic live in popup/tx-math.js so the
+// money math can be tested without a DOM or a network. See
+// test/transaction.test.js.
+const satToQtcString = (sat) => QtcTx.satToQtcString(sat);
 
-async function fetchScriptPubKey(txid, vout){
-  const url = `/tx/${txid}`;
-  const r = await fetchAPI(url);
-  if(!r.ok) throw new Error(`tx ${txid} ${r.status}`);
-  const j = await r.json();
-  if(!j || !Array.isArray(j.vout) || !j.vout[vout]) throw new Error("tx vout missing");
-  return j.vout[vout].scriptpubkey;
-}
-
-async function fetchUTXOsEsplora(address){
-  const url = `/address/${encodeURIComponent(address)}/utxo`;
-  const r = await fetchAPI(url);
-  if(!r.ok) throw new Error(`UTXO fetch ${r.status}`);
-  return await r.json(); 
-}
-
-function reverseHex(h){ return (h||'').match(/.{1,2}/g).reverse().join(''); }
-function estimateVSize(numIn, numOut){
-  return Math.ceil(148*numIn + 34*numOut + 10);
+// coinjs runs with coinjs.compressed = false, so resolve the real pubkey length
+// instead of assuming the 33-byte compressed case.
+function pubkeyBytesForKey(wif){
+  try {
+    const pub = coinjs.wif2pubkey(wif).pubkey;
+    if (typeof pub === 'string' && pub.length) return pub.length / 2;
+  } catch(e){}
+  return 65;
 }
 
 async function buildAndSignTx(fromIdx, toAddress, amountQtc, feeSatPerByte){
   if (!coinjs || !coinjs.transaction) throw new Error("coinjs not available");
   const from = state.keys[fromIdx]; if(!from) throw new Error("invalid origin");
 
-  // Fetch UTXOs using our fetchAPI instead of coinjs.ajax
-  const utxoUrl = `/address/${encodeURIComponent(from.addr)}/utxo`;
-  const utxoRes = await fetchAPI(utxoUrl);
+  const amountSat = QtcTx.qtcToSat(amountQtc);
+
+  const utxoRes = await fetchAPI(`/address/${encodeURIComponent(from.addr)}/utxo`);
   if(!utxoRes.ok) throw new Error(`UTXO fetch failed: ${utxoRes.status}`);
   const utxos = await utxoRes.json();
-  
-  if(!Array.isArray(utxos) || utxos.length === 0){
-    throw new Error("No unspent outputs found");
-  }
-  
-  // Filter only confirmed UTXOs for sending
-  const confirmedUtxos = utxos.filter(u => u.status && u.status.confirmed);
-  if(confirmedUtxos.length === 0){
-    throw new Error("No confirmed UTXOs available");
-  }
-  
-  // Build transaction
+  if(!Array.isArray(utxos) || utxos.length === 0) throw new Error("No unspent outputs found");
+
+  // Only confirmed outputs: spending unconfirmed change risks the parent being
+  // dropped from the mempool and this transaction becoming unspendable.
+  const confirmed = utxos.filter(u => u && u.status && u.status.confirmed);
+  if(confirmed.length === 0) throw new Error("No confirmed UTXOs available");
+
+  const plan = QtcTx.planTransaction({
+    utxos: confirmed,
+    amountSat: amountSat,
+    feeRate: Number(feeSatPerByte),
+    pubkeyBytes: pubkeyBytesForKey(from.wif)
+  });
+
   const tx = coinjs.transaction();
   tx.version = 2;
-  
-  let totalValue = 0;
-  for(const u of confirmedUtxos){
-    const s = coinjs.script();
-    s.spendToScript(from.addr);
-    tx.addinput(u.txid, u.vout, Crypto.util.bytesToHex(s.buffer), 0xffffffff);
-    totalValue += u.value;
+  for(const u of plan.selected){
+    tx.addinput(u.txid, u.vout, '', 0xffffffff);
   }
-  
-  const nIn = confirmedUtxos.length;
-  const nOut = 2;
-  const vsize = Math.ceil(148*nIn + 34*nOut + 10);
-  const feeSat = Math.ceil(vsize * feeSatPerByte);
-  const feeQTC = feeSat / 1e8;
-  
-  const totalQTC = totalValue / 1e8;
-  const changeQTC = totalQTC - amountQtc - feeQTC;
-  if(changeQTC < 0) throw new Error("Insufficient funds");
-  
-  tx.addoutput(toAddress, Number(amountQtc).toFixed(8));
-  if(changeQTC > 0.00000546) tx.addoutput(from.addr, Number(changeQTC).toFixed(8));
-  
+  tx.addoutput(toAddress, satToQtcString(amountSat));
+  if(plan.changeSat > 0) tx.addoutput(from.addr, satToQtcString(plan.changeSat));
+
   // Sign transaction
   const tx2 = coinjs.transaction();
   const txu = tx2.deserialize(tx.serialize());
@@ -1091,68 +1092,101 @@ async function buildAndSignTx(fromIdx, toAddress, amountQtc, feeSatPerByte){
   }
   
   const hex = txu.serialize();
-  if(!hex || typeof hex !== 'string') throw new Error("Signing failed");
-  
-  return hex;
+  if(!hex || typeof hex !== 'string' || !/^[0-9a-fA-F]+$/.test(hex)) throw new Error("Signing failed");
+
+  // estimateVSize is an upper bound; verify against the real serialized size so
+  // we never broadcast something a node would drop for paying under the
+  // minimum relay rate.
+  const bytes = hex.length / 2;
+  const actualRate = plan.feeSat / bytes;
+  if(actualRate < 1){
+    throw new Error(`Fee too low: ${actualRate.toFixed(2)} sat/byte over ${bytes} bytes`);
+  }
+
+  return {
+    hex, bytes,
+    feeSat: plan.feeSat,
+    changeSat: plan.changeSat,
+    amountSat: amountSat,
+    inputSat: plan.inputSat,
+    inputs: plan.selected.length,
+    feeRate: actualRate
+  };
 }
 
 // Store pending transaction data for confirmation
 let __pendingSend = null;
 
-// Validate QTC address format
+// Validate a QTC address. addressDecode() verifies the base58 checksum, so a
+// mistyped address is caught here rather than burning the funds.
+//
+// Accepted forms, checked against Qubitcoin's own chainparams
+// (super-quantum/qubitcoin, src/kernel/chainparams.cpp), which inherits
+// Bitcoin's values unchanged:
+//   PUBKEY_ADDRESS = 0x00   -> P2PKH  (coinjs.pub)
+//   SCRIPT_ADDRESS = 0x05   -> P2SH   (coinjs.multisig)
+//   bech32_hrp     = "bc"   -> native segwit, bc1...
+//
+// The bech32 case matters: addressDecode() returns {type:'bech32', redeemscript}
+// with no `version` field, so a version-only check silently rejects every
+// segwit destination. addoutput() -> spendToScript() builds the P2WPKH output
+// correctly, and our inputs stay P2PKH either way, so these are spendable.
+//
+// There is deliberately no regex fallback: if coinjs is missing we cannot
+// verify the checksum, and accepting an address on shape alone would let a
+// typo through. Refuse instead.
 function isValidQtcAddress(addr){
   if(!addr || typeof addr !== 'string') return false;
-  // Use coinjs validation if available
-  if(typeof coinjs !== 'undefined' && typeof coinjs.addressDecode === 'function'){
-    try {
-      const decoded = coinjs.addressDecode(addr);
-      // Valid if decoded and has correct version (0x00 for P2PKH, 0x05 for P2SH)
-      if(decoded && (decoded.version === coinjs.pub || decoded.version === coinjs.multisig || decoded.type === 'bech32')){
-        return true;
-      }
-      return false;
-    } catch(e){ return false; }
-  }
-  // Fallback: basic format check (Base58 chars, length 25-35)
-  if(!/^[1-9A-HJ-NP-Za-km-z]{25,35}$/.test(addr)) return false;
-  return true;
+  if(typeof coinjs === 'undefined' || typeof coinjs.addressDecode !== 'function') return false;
+  try {
+    const decoded = coinjs.addressDecode(addr);
+    if(!decoded) return false;
+    if(decoded.type === 'bech32') return !!decoded.redeemscript;
+    return decoded.version === coinjs.pub || decoded.version === coinjs.multisig;
+  } catch(e){ return false; }
 }
 
-// Show confirmation modal before sending
+// Validate, build and sign, then ask for confirmation.
+//
+// The transaction is built *before* the dialog opens so the dialog can show the
+// fee this transaction will actually pay. Previously it echoed back the
+// requested sat/byte rate, which told the user nothing about the real cost.
+// Nothing is broadcast until executeConfirmedSend() runs.
 async function easySend(){
+  const btn = document.getElementById('easySendBtn');
   try{
-    // Use active wallet index
     const idx = window.activeWalletIndex || 0;
-    const to = (document.querySelector('#easyTo').value||"").trim();
-    const amt = Number(document.querySelector('#easyAmount').value||"0");
-    const fee = Number(document.querySelector('#easyFee').value||"5");
-    
+    const to  = (document.querySelector('#easyTo').value || "").trim();
+    const amt = Number(document.querySelector('#easyAmount').value || "0");
+    const fee = Number(document.querySelector('#easyFee').value || "5");
+
+    if(!window.isUnlocked || !window.isUnlocked()) throw new Error("Wallet is locked");
     if(!to) throw new Error("Recipient is required");
-    
-    // SECURITY: Validate destination address
-    if(!isValidQtcAddress(to)){
-      throw new Error("Invalid QTC address format");
-    }
-    
-    if(!amt || amt<=0) throw new Error("Invalid amount");
-    if(!fee || fee<=0) throw new Error("Invalid fee");
-    
-    // Store data and show confirmation modal
-    __pendingSend = { idx, to, amt, fee };
-    
-    // Populate modal
-    const modal = document.getElementById('confirmSendModal');
+    if(!isValidQtcAddress(to)) throw new Error("Invalid QTC address (checksum failed)");
+    if(!(amt > 0)) throw new Error("Invalid amount");
+    if(!(fee > 0)) throw new Error("Invalid fee");
+
+    if(btn){ btn.disabled = true; btn.textContent = 'Preparing…'; }
+    const built = await buildAndSignTx(idx, to, amt, fee);
+    __pendingSend = { built, to };
+
     document.getElementById('confirmTo').textContent = to;
     document.getElementById('confirmTo').title = to;
-    document.getElementById('confirmAmount').textContent = amt.toFixed(8) + ' QTC';
-    document.getElementById('confirmFee').textContent = fee + ' sats/byte';
-    
-    // Show modal
+    document.getElementById('confirmAmount').textContent = satToQtcString(built.amountSat) + ' QTC';
+    document.getElementById('confirmFee').textContent =
+      `${satToQtcString(built.feeSat)} QTC · ${built.feeRate.toFixed(2)} sat/B · ` +
+      `${built.inputs} input${built.inputs === 1 ? '' : 's'}`;
+    const totalEl = document.getElementById('confirmTotal');
+    if(totalEl) totalEl.textContent = satToQtcString(built.amountSat + built.feeSat) + ' QTC';
+
+    const modal = document.getElementById('confirmSendModal');
     modal.classList.remove('hidden');
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
   }catch(e){
-    notify(String(e), "error"); 
+    notify(e && e.message ? e.message : String(e), "error");
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = 'Send'; }
   }
 }
 
@@ -1173,33 +1207,33 @@ async function executeConfirmedSend(){
   modal.setAttribute('aria-hidden', 'true');
   
   if(!__pendingSend) return;
-  const { idx, to, amt, fee } = __pendingSend;
+  const { built } = __pendingSend;
   __pendingSend = null;
-  
+
   try{
-    showOut('Signing transaction…');
-    const hex = await buildAndSignTx(idx, to, amt, fee);
-    if (!(typeof hex==='string' && hex.length>=200 && /^[0-9a-fA-F]+$/.test(hex))) {  
-      showOut('Invalid TX'); notify('Invalid TX','error');
-      try{ await fetchBalances(); setTimeout(()=>{ try{ fetchBalances(); }catch(e){} }, 1500); }catch(e){}
-      return;
-    }
-    try{ var txArea=document.querySelector('#rawtx'); if(txArea){ txArea.value = hex; } }catch(e){}
     showOut('Broadcasting…');
-    // broadcast via SW
-    const res=await chrome.runtime.sendMessage({ type:"QTC_BROADCAST", rawtx:hex });
-    const msg = (res && res.ok) ? 'Transaction sent!' : ('Send error: ' + ((res&& (res.error||res.status)) || 'unknown'));
-    showOut(msg);
-    notify(res.ok ? "Transaction sent" : ("Broadcast error: "+(res.error||res.status)), res.ok ? "success":"error");
-    // Auto-hide after success
-    if(res && res.ok){ 
-      // Clear form
-      try{ document.querySelector('#easyTo').value = ''; document.querySelector('#easyAmount').value = ''; }catch(e){}
-      setTimeout(()=> showOut(''), 5000); 
+    const res = await chrome.runtime.sendMessage({ type:"QTC_BROADCAST", rawtx: built.hex });
+    const ok = !!(res && res.ok);
+    const detail = (res && (res.error || res.body || res.status)) || 'no response';
+
+    if(ok){
+      showOut(`Transaction sent — fee ${satToQtcString(built.feeSat)} QTC`);
+      notify("Transaction sent", "success");
+      try{
+        document.querySelector('#easyTo').value = '';
+        document.querySelector('#easyAmount').value = '';
+      }catch(e){}
+      setTimeout(()=> showOut(''), 8000);
+    } else {
+      showOut('Send error: ' + detail);
+      notify('Broadcast error: ' + detail, 'error');
     }
+    // Refresh either way: a rejected broadcast may still have changed state.
+    try{ await fetchBalances(); }catch(e){}
   }catch(e){
-    showOut(String(e));
-    notify(String(e), "error"); 
+    const msg = e && e.message ? e.message : String(e);
+    showOut(msg);
+    notify(msg, "error");
   }
 }
 
@@ -1338,8 +1372,8 @@ async function renderActivity(){
           </div>`;
 
         const details = `<div class="tx-details">
-            <div class="tx-sub">${addrURL ? `<a href="${addrURL}" target="_blank" rel="noopener">${counter || ''}</a>` : 'unknown'}</div>
-            <div class="tx-sub"><a href="${txURL}" target="_blank" rel="noopener">${tx.txid || ''}</a></div>
+            <div class="tx-sub">${addrURL ? `<a href="${addrURL}" target="_blank" rel="noopener">${escapeHtml(counter)}</a>` : 'unknown'}</div>
+            <div class="tx-sub"><a href="${txURL}" target="_blank" rel="noopener">${escapeHtml(tx.txid)}</a></div>
           </div>`;
 
         return `<div class="tx-row${isPending?' pending':''}" role="button" tabindex="0" aria-expanded="false">${head}${details}</div>`;
@@ -1388,21 +1422,6 @@ document.addEventListener('click', (ev)=>{
 }, {passive:true});
 
 ['visibilitychange','focus'].forEach(ev => document.addEventListener(ev, renderActivity, {passive:true}));
-
-function updateTotalsFiat(price, ch24){
-  try{
-    const total = (typeof window.__qtcTotal === 'number') ? window.__qtcTotal : parseFloat((document.getElementById('totalBalance')||{}).textContent||"0") || 0;
-    const elFiat = document.getElementById('totalFiat');
-    const elCh   = document.getElementById('totalFiatChange');
-    const fmtUSD = (v)=>{ const n = Number(v||0); return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`; };
-    if (elFiat) elFiat.textContent = fmtUSD(total * (price||0));
-    if (elCh){
-      const sign = ch24>0 ? 'pos' : (ch24<0 ? 'neg' : 'neutral');
-      elCh.className = `change ${sign}`;
-      elCh.textContent = (ch24>0?'+':'') + (isFinite(ch24)?ch24.toFixed(2):'0.00') + '%';
-    }
-  }catch(e){}
-}
 
 (function(){
   // CoinEx API v2 - Public endpoints (no auth required)
@@ -1655,23 +1674,11 @@ function updateTotalsFiat(price, ch24){
       menuLock.addEventListener('click', async ()=>{
         menu.classList.remove('show');
         try {
-          // Clear session state
-          if(window.state){
-            state.unlocked = false;
-            state.cryptoKey = null;
-            state.keys = [];
-          }
-          // Clear ALL session data
-          try { await chrome.storage.session.clear(); } catch(e){}
-          try { 
-            await new Promise((resolve) => {
-              chrome.runtime.sendMessage({type:'QTC_SESS_CLEAR'}, () => {
-                if (chrome.runtime.lastError) { /* ignore */ }
-                resolve();
-              });
-            });
-          } catch(e){}
-          try { if(typeof clearEnvelope === 'function') await clearEnvelope(); } catch(e){}
+          // window.state is a read-only snapshot getter: assigning to it here
+          // mutated a throwaway object and left the real keys in memory.
+          // clearSession() lives inside popup.js's closure and wipes the
+          // actual state, the offscreen session and any legacy blobs.
+          await window.clearSession();
           // Show auth, hide wallet
           document.body.classList.add('auth-mode');
           const auth = document.getElementById('authSection');
@@ -1679,7 +1686,9 @@ function updateTotalsFiat(price, ch24){
           if(auth){ auth.classList.remove('hidden'); auth.style.display = ''; }
           if(wallet){ wallet.classList.add('hidden'); wallet.style.display = 'none'; }
           // Reset auth UI to unlock mode
-          if(typeof window.setAuthMode === 'function') window.setAuthMode('unlock');
+          // refreshAuthMode() rather than a hardcoded 'unlock': it is the one
+          // place that decides the auth screen, from whether a vault exists.
+          if(typeof window.refreshAuthMode === 'function') await window.refreshAuthMode();
           // Clear password field
           const pwd = document.getElementById('password');
           if(pwd) pwd.value = '';
@@ -1888,7 +1897,7 @@ function updateWalletSelector(){
         ${check}
         <span>Wallet ${i + 1}</span>
       </div>
-      <span class="wallet-addr">${shortAddr}</span>
+      <span class="wallet-addr">${escapeHtml(shortAddr)}</span>
     </button>`;
   }).join('');
   
@@ -1918,7 +1927,7 @@ if(document.readyState === 'loading'){
 }
 
 // New Address Modal Logic
-function openNewAddressModal(){
+async function openNewAddressModal(){
   const modal = document.getElementById('newAddressModal');
   const addrInput = document.getElementById('newAddrAddress');
   const wifInput = document.getElementById('newAddrWif');
@@ -1934,18 +1943,11 @@ function openNewAddressModal(){
     return;
   }
   
-  let newKey;
-  try {
-    newKey = generateAddress();
-    if(!newKey || !newKey.address || !newKey.wif){
-      notify('Error creating address', 'error');
-      return;
-    }
-  } catch(e){
-    notify('Error creating address: ' + e.message, 'error');
-    return;
-  }
-  
+  // generateAddress() only resolves once the key is durably persisted, so the
+  // WIF shown below is guaranteed to survive the next lock.
+  const newKey = await generateAddress();
+  if(!newKey) return; // generateAddress already reported why
+
   // Show modal with new address
   addrInput.value = newKey.address;
   wifInput.value = newKey.wif;
@@ -1958,19 +1960,9 @@ function openNewAddressModal(){
     modal.classList.add('hidden');
     modal.style.display = 'none';
     modal.setAttribute('aria-hidden', 'true');
-    // Save keys and refresh
-    try { 
-      if(typeof saveKeysEncrypted === 'function') await saveKeysEncrypted(); 
-    } catch(e){}
-    try { 
-      if(typeof renderKeys === 'function') renderKeys(); 
-    } catch(e){}
-    try { 
-      if(typeof fetchBalances === 'function') await fetchBalances(); 
-    } catch(e){}
-    try {
-      if(typeof populateFromSelect === 'function') populateFromSelect();
-    } catch(e){}
+    // generateAddress() -> pushKey() already persisted the key and re-rendered
+    // the list; only the balances still need a refresh.
+    try { await fetchBalances(); } catch(e){}
   };
   
   // Copy Address
@@ -2129,8 +2121,8 @@ async function renderMining() {
       const miners = poolStats.pool?.miners || poolStats.miners || 0;
       const blocks = poolStats.pool?.blocksFound || poolStats.blocksFound || 0;
       html += `<div class="stat-row"><span class="label">Hashrate:</span><span class="value">${formatHashrate(hashrate)}</span></div>`;
-      html += `<div class="stat-row"><span class="label">Miners:</span><span class="value">${miners}</span></div>`;
-      html += `<div class="stat-row"><span class="label">Blocks Found:</span><span class="value">${blocks}</span></div>`;
+      html += `<div class="stat-row"><span class="label">Miners:</span><span class="value">${escapeHtml(miners)}</span></div>`;
+      html += `<div class="stat-row"><span class="label">Blocks Found:</span><span class="value">${escapeHtml(blocks)}</span></div>`;
     } else {
       html += '<div class="muted">Could not load pool stats</div>';
     }
