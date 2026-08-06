@@ -1,0 +1,8 @@
+node_modules/
+
+# Build artifacts. Qverse-Wallet-v0.3.3.zip used to be committed here; the
+# packaged extension is reproducible from the source tree and does not belong
+# in version control.
+*.zip
+
+.DS_Store
