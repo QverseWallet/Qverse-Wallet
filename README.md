@@ -5,45 +5,18 @@ Minimal, retail-friendly UI, built as a Chrome Extension (Manifest V3) with a si
 
 ---
 
-## 🔐 Verify Extension Integrity
-
-The Chrome Web Store version is built from this exact source code. You can verify it:
-
-### Current Version: v0.3.2
-**SHA256:** `9B12B5DA5E0545106E3140F528BC6610FE857A5EAB20205748C288656D5E5CC1`
-
-### How to Verify:
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/QverseWallet/Qverse-Wallet.git
-   ```
-2. Create a ZIP of the extension:
-   ```bash
-   # Windows (PowerShell)
-   Compress-Archive -Path "Qverse-Wallet\*" -DestinationPath "qverse-wallet.zip"
-   
-   # Linux/Mac
-   cd Qverse-Wallet && zip -r ../qverse-wallet.zip .
-   ```
-3. Calculate the SHA256 hash:
-   ```bash
-   # Windows (PowerShell)
-   Get-FileHash qverse-wallet.zip -Algorithm SHA256
-   
-   # Linux/Mac
-   sha256sum qverse-wallet.zip
-   ```
-4. Compare with the hash above. If they match, the code is identical.
-
----
-
 ## ✨ Key Features
 - **Chrome MV3** (Service Worker background).
 - **Local encrypted vault** (password-based; PBKDF2 → AES-GCM).
 - **Create / import accounts**, manage multiple addresses.
-- **Transaction signing & send flow.**
-- **Lightweight UI** (popup) and basic options.
+- **Transaction signing & send flow** with a confirmation step showing the real fee.
+- **Lightweight UI** (popup) and a read-only options page.
 - **Minimal permissions** (see `manifest.json`), privacy-first.
+
+> ⚠️ **Back up every address separately.** There is no recovery phrase. Each
+> address is an independent private key, so exporting one WIF does not let you
+> recover the others. Save the WIF of every address you fund. Hierarchical
+> derivation (BIP32/BIP39) is on the roadmap.
 
 > **Security disclaimer:** Early-stage, community software. Always test with small amounts first. You are responsible for securing your keys and environment.
 
@@ -68,15 +41,9 @@ The Chrome Web Store version is built from this exact source code. You can verif
 - **All secrets stay local.** Only the explorer, pool and price endpoints pinned in `host_permissions` are contacted.
 - **Strict CSP** and minimal permissions to reduce attack surface.
 
-### Tests
-
-```bash
-npm test
-```
-
-Covers CSPRNG key generation (including a booby-trapped `Math.random` to prove it is never reached), WIF/address round-trips, transaction fee and change arithmetic against real signed transactions, and packaging integrity.
-
-> **Hardening ideas (roadmap):** BIP32/BIP39 hierarchical derivation with a recovery phrase (today each address is an independent key and must be backed up individually), reproducible builds, third-party audit.
+Chain constants (dust limit, minimum relay fee, address version bytes) are taken
+from Qubitcoin's own node source rather than assumed, and are documented inline
+in `popup/tx-math.js`.
 
 ---
 
@@ -85,44 +52,57 @@ Covers CSPRNG key generation (including a booby-trapped `Math.random` to prove i
 2. Open Chrome → `chrome://extensions`
 3. Enable **Developer mode** (top-right).
 4. Click **Load unpacked** and select the project folder (the one containing `manifest.json`).
-   - If you introduce a build step later, load the `dist/` folder instead.
 
 The wallet icon should appear in your toolbar.
 
+To confirm the secure key generator is active, open the popup, right-click →
+**Inspect**, and run `coinjs.__secureRandom` in the console. It must return
+`true`.
+
 ---
 
-## 📂 Typical Project Layout
+## 📂 Project Layout
 ```
 Qverse-Wallet/
 ├─ manifest.json
-├─ popup/               # UI (create/unlock, accounts, send)
-├─ background/          # service worker
-├─ options/             # configuration page
-├─ offscreen/           # crypto/session helpers (optional)
-├─ app/
-│  └─ js/               # crypto primitives (hashing, ECDSA, AES, PBKDF2)
+├─ popup/               # UI (create/unlock, accounts, send), tx math, session gate
+├─ background/          # service worker (broadcast, balances, message relay)
+├─ options/             # read-only settings view
+├─ offscreen/           # in-memory store for the unlocked session
+├─ app/js/              # crypto primitives (hashing, ECDSA, AES) + secure-random.js
+├─ test/                # regression suite
 └─ README.md
 ```
-
-> Keep any legacy/demo third-party code outside the packaged build (e.g., under `third_party/`) and retain the original licenses.
 
 ---
 
 ## 🛠 Development
-- No build is strictly required. If you later add bundling:
-  ```bash
-  npm i
-  npm run build
-  ```
-- Load `dist/` as the unpacked extension after building.
-- Use **Conventional Commits** (`feat:`, `fix:`, `chore:`) for clean history.
+
+No build step. Load the repository directly as an unpacked extension.
+
+```bash
+npm test
+```
+
+Runs the regression suite (49 tests, no dependencies):
+
+| Suite | Covers |
+|---|---|
+| `crypto-regression` | CSPRNG key generation — including a booby-trapped `Math.random` to prove it is never reached — key uniqueness, entropy, WIF/address round-trips, checksum rejection |
+| `transaction` | Fee, change and coin-selection arithmetic, plus a check that the size estimate bounds a real signed transaction |
+| `integrity` | Script load order, manifest references, host permissions, and that no key material is written to `chrome.storage` |
+| `popup-smoke` | Loads the real scripts in the order `index.html` specifies and exercises startup |
+| `vault` | Vault creation, password policy, session restore, and refusal to overwrite keys that failed to decrypt |
+
+Use **Conventional Commits** (`feat:`, `fix:`, `chore:`) for clean history.
 
 ---
 
 ## 🔒 Permissions & Privacy
 - Minimal MV3 permissions declared in `manifest.json`.
-- `host_permissions` limited to necessary explorer/RPC endpoints.
-- No analytics, no tracking scripts.
+- `host_permissions` limited to the explorer, mining pool and price endpoints the wallet actually calls.
+- No analytics, no tracking scripts. The CSP (`script-src 'self'`) blocks any external script.
+- **Disclosure:** the dashboard shows a banner linking to CoinEx with a referral code (`?rc=qverse`). It is a plain link — nothing is tracked or sent from the extension — but the maintainers may receive a referral benefit if you sign up through it.
 
 ---
 
@@ -135,11 +115,12 @@ Thanks to coinbin and related open-source crypto libraries (coinjs/ec primitives
 ---
 
 ## 🗺 Roadmap
+- BIP32/BIP39 hierarchical derivation with a recovery phrase, so a single backup covers every address.
 - Hardware-wallet integration (e.g., Ledger; opt-in blind signing).
 - Full activity view with confirmations/unconfirmed balance.
 - Network switcher & endpoint presets.
 - i18n (EN/ES).
-- Unit tests for crypto utilities and transaction builders.
+- Reproducible builds.
 - Security review / external audit.
 
 ---
@@ -155,14 +136,19 @@ By contributing, you agree your contributions are licensed under this repository
 ---
 
 ## 🛡 Security Policy
-If you discover a vulnerability, please report it **responsibly**:
-- Prefer a GitHub Issue labeled `security` (avoid pasting sensitive details publicly).
-- Alternatively, email the maintainers (add a contact in your fork).
 
-We aim to acknowledge reports within **7 days** and provide a remediation plan as soon as feasible.
-Scope: this extension’s code (MV3 service worker, popup, options, offscreen/crypto helpers) and build scripts in this repo.
+**Please do not open a public issue for security problems.** A public report on a
+live wallet exposes users before a fix can reach them.
 
-**Please do not** disclose 0-days publicly before coordination or submit exploits targeting end-users.
+Report privately through **GitHub's private vulnerability reporting** on this
+repository: go to the **Security** tab → **Report a vulnerability**. Only the
+maintainers can see it.
+
+Scope: this extension's code — MV3 service worker, popup, options page, offscreen
+session helper, and the crypto primitives under `app/js/`.
+
+Please give us a reasonable window to ship a fix before disclosing publicly, and
+do not run exploits against other users' wallets.
 
 ---
 
@@ -195,6 +181,5 @@ THE SOFTWARE.
 ### NOTICE
 This project includes or is based on components licensed under MIT:
 
-- **OutCast3k/coinbin** — © respective authors — https://github.com/OutCast3k/coinbin — MIT License.
-
-The MIT license text for these components is available in their respective repositories.
+- **OutCast3k/coinbin** — © 2014 OutCast3k — https://github.com/OutCast3k/coinbin — MIT License.
+  Full licence text: [`app/js/LICENSE-coinbin.txt`](app/js/LICENSE-coinbin.txt).
