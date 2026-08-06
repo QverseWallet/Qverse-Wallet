@@ -51,19 +51,32 @@ The Chrome Web Store version is built from this exact source code. You can verif
 
 ## 🧱 Architecture (High Level)
 - **`manifest.json`** — MV3 entry point & permissions.
-- **Background (Service Worker)** — core logic, session handling/orchestration.
+- **Background (Service Worker)** — broadcast, balance lookups, message relay to the offscreen document.
 - **Popup UI** — create/unlock vault, accounts, send flow.
-- **Options page** — basic configuration (e.g., endpoints).
-- **Offscreen/Workers** — cryptographic operations & session TTL (avoid blocking UI).
+  - `popup/tx-math.js` — transaction sizing, coin selection and fee arithmetic (integer satoshis, unit-tested).
+  - `popup/session-gate.js` — auth/wallet visibility and auto-lock enforcement.
+- **Options page** — read-only view of the endpoints in use and the current auto-lock setting.
+- **Offscreen document** — the only place unlocked keys live, with a session TTL. Nothing is written to disk.
 - **Crypto libs (`app/js/`)** — ECDSA/secp256k1, hashing (SHA-256/RIPEMD-160/SHA-512), AES, PBKDF2.
+  - `app/js/secure-random.js` — **must load last.** Replaces coinbin's `Math.random()` entropy with `crypto.getRandomValues`.
 
 ### Security Model
-- **Password-derived key** via PBKDF2 with per-vault **salt**, used for **AES-GCM** encryption with random **IV**.
-- **Per-session unlock** with timeout (TTL) to reduce secret exposure.
-- **All secrets stay local** (Chrome storage). Only required blockchain/explorer calls are made to configured endpoints.
+- **Password-derived key** via PBKDF2-SHA256 (600k iterations) with a per-vault **salt**, used for **AES-GCM** encryption with a random **IV**. Vaults written by older versions are migrated on unlock.
+- **Private keys come from `crypto.getRandomValues`**, rejection-sampled into the valid secp256k1 range. The wallet refuses to generate a key if `secure-random.js` is not active.
+- **Minimum 8-character vault password**, with a confirmation field at creation.
+- **Session keys live only in the offscreen document's memory.** Nothing key-related is written to `chrome.storage`; if the document is torn down the session fails closed and the password is required again.
+- **All secrets stay local.** Only the explorer, pool and price endpoints pinned in `host_permissions` are contacted.
 - **Strict CSP** and minimal permissions to reduce attack surface.
 
-> **Hardening ideas (roadmap):** raise KDF iterations, add integrity checks, unit tests/fuzzing for tx builders, reproducible builds, third-party audit.
+### Tests
+
+```bash
+npm test
+```
+
+Covers CSPRNG key generation (including a booby-trapped `Math.random` to prove it is never reached), WIF/address round-trips, transaction fee and change arithmetic against real signed transactions, and packaging integrity.
+
+> **Hardening ideas (roadmap):** BIP32/BIP39 hierarchical derivation with a recovery phrase (today each address is an independent key and must be backed up individually), reproducible builds, third-party audit.
 
 ---
 
