@@ -1,0 +1,10 @@
+{
+  "name": "qverse-wallet",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Qverse Wallet — browser extension for the Qubitcoin blockchain",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/crypto-regression.test.js && node test/transaction.test.js && node test/integrity.test.js && node test/popup-smoke.test.js && node test/vault.test.js"
+  }
+}
